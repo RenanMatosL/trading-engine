@@ -1,0 +1,110 @@
+# ==================================================================
+# Preset do EA StdDevVolumeBreakout v4.60
+# Cada valor mapeia EXATAMENTE ao input de mesmo nome no .mq5.
+# Comentários: # <input MQL5> (default do EA)
+# ==================================================================
+name: v510_default
+strategy: stddev_v510
+
+# ------------------------------------------------------------------
+# DETECTOR — cálculo do z-score de volume
+# ------------------------------------------------------------------
+detector:
+  length: 180                              # InpLen (180)
+  std_ref: 4.0                             # InpStdRef (4.0)
+  volume_source: tick                      # InpVolType = VOL_TICK
+  timeframe: M1                            # InpTimeframe = PERIOD_M1
+  mute_open_min: 10                        # InpSignalMuteOpenMin (10)
+
+  # Regra de candle grande
+  use_big_candle_rule: true                # InpUseBigCandleRule (true)
+  big_candle_min_range: 400                # InpBigCandleMinRange (400)
+  big_candle_entry_offset: 200             # InpBigCandleEntryOffset (200)
+  big_candle_sl_adjust: 0                  # InpBigCandleSLAdjust (0)
+
+# ------------------------------------------------------------------
+# SESSION — janela operacional + filtros
+# ------------------------------------------------------------------
+session:
+  window:
+    start: "09:00:00"                      # InpStartHour:InpStartMinute (9:00)
+    end: "17:30:00"                        # InpEndHour:InpEndMinute (17:30)
+  close_outside: true                      # InpCloseOutside (true)
+
+  carry_entry_delay_min: 15                # InpCarryEntryDelayMin (15)
+  breakout_ttl_min: 60                     # InpBreakoutTTLMin (60)
+  cooldown_after_sl_min: 10                # InpCooldownAfterSLMin (10)
+  max_trades_day: 3                        # InpMaxTradesDay (3)
+
+  # Janela de exclusão de entradas (10:00-11:00)
+  use_entry_block: true                    # InpUseEntryBlock (true)
+  entry_block:
+    start: "10:00:00"                      # InpBlockStartHour:InpBlockStartMinute (10:00)
+    end: "11:00:00"                        # InpBlockEndHour:InpBlockEndMinute (11:00)
+
+# ------------------------------------------------------------------
+# ENTRY — entrada por pullback / ordem limite
+# ------------------------------------------------------------------
+entry:
+  level_mode: default                      # InpEntryLevelMode = ENTRY_DEFAULT
+  level_offset_points: 0                   # InpEntryLevelOffset (0)
+  as_pending: true                         # InpEntryAsPending (true)
+  max_entry_gap_points: 100                # InpMaxEntryGapPoints (100)
+
+# ------------------------------------------------------------------
+# STOP — configuração do Stop Loss
+# ------------------------------------------------------------------
+stop:
+  level_mode: default                      # InpSLLevelMode = SL_DEFAULT
+  sl_points: 200                           # InpSLPoints (200)
+  level_offset_points: 0                   # InpSLLevelOffset (0)
+
+# ------------------------------------------------------------------
+# TAKE PROFIT — TP final
+# ------------------------------------------------------------------
+take_profit:
+  use_final_tp: true                       # InpUseFinalTP (true)
+  final_tp_points: 600                     # InpFinalTPPoints (600)
+
+# ------------------------------------------------------------------
+# RISK — dimensionamento + parciais + reforço
+# ------------------------------------------------------------------
+risk:
+  # Sizing
+  sizing_mode: fixed_contracts             # InpSizingMode = SIZING_FIXED_CONTRACTS
+  total_contracts: 6                       # InpTotalContracts (6)
+  lot_per_contract: 1.0                    # InpLotPerContract (1.0)
+
+  # Modo "Pelo risco" (só usado se sizing_mode = by_risk)
+  risk_mode: percent_balance               # InpRiskMode = RISK_PERCENT_BAL
+  risk_value: 1.0                          # InpRiskValue (1.0)
+
+  # Parciais (default do EA: desligadas)
+  use_partial_exit: false                  # InpUsePartialExit (false)
+  exit_type: points                        # InpExitType = EXIT_POINTS
+  partial_points: 200                      # InpPartialPoints (200)
+  partial_percent: 0.2                     # InpPartialPercent (0.2)
+  partial_as_pending: true                 # InpPartialAsPending (true)
+  breakeven_after_partial: false           # InpBreakevenAfterPartial (false)
+  tiers:
+    - contracts: 3                         # InpPartialContracts (3)
+      points: 200                          # InpPartialPoints (200)
+    - contracts: 0                         # InpPartial2Contracts (0)
+      points: 400                          # InpPartial2Points (400)
+    - contracts: 0                         # InpPartial3Contracts (0)
+      points: 600                          # InpPartial3Points (600)
+
+  # Reforço (default do EA: desligado)
+  use_reentry: false                       # InpUseReentry (false)
+  reentry_contracts: 3                     # InpReentryContracts (3)
+  reentry_arm_points: 200                  # InpReentryArmPoints (200)
+  reentry_tp_points: 200                   # InpReentryTPPoints (200)
+  reentry_sl_points: 200                   # InpReentrySLPoints (200)
+
+# ------------------------------------------------------------------
+# REGIONS — gerenciamento de regiões de trade-location
+# ------------------------------------------------------------------
+regions:
+  max_loc: 12                              # #define MAX_LOC (12)
+  valid_days: 2                            # InpLocationValidDays (2)
+  candidate_mode: highest_volume           # InpCandidateMode = CAND_HIGHEST_VOLUME

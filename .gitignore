@@ -1,0 +1,25 @@
+# Ambiente virtual e cache Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Configurações locais e segredos (NUNCA subir)
+.env
+.env.*
+!.env.example
+
+# Banco de dados local (se houver na F3)
+*.db
+*.sqlite3
+
+# IDEs e Sistema
+.idea/
+.vscode/
+.DS_Store
+
+# Logs
+*.log
+
+# Fixtures grandes (Opcional: se o CSV for muito grande, comente a linha abaixo)
+# tests/fixtures/v510_expected.csv

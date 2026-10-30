@@ -1,0 +1,412 @@
+"""CLI do motor: engine status | check-config | run | shadow | version."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import structlog
+
+from engine import __version__
+from engine.application.executor import RealExecutor
+from engine.application.poller import TradeEventPoller
+from engine.application.shadow import ShadowComparer
+from engine.application.status import get_status
+from engine.application.trading_session import TradingSession
+from engine.config.presets import load_preset
+from engine.config.settings import EngineSettings
+from engine.domain.shared.types import MarketSnapshot
+from engine.domain.strategy.detector import VolumeStdDetector
+from engine.infrastructure.logging.setup import setup_logging
+from engine.infrastructure.mt5.fake import FakeGateway
+from engine.infrastructure.mt5.gateway import (
+    BrokerGateway,
+    MT5NotAvailableError,
+    RealMT5Gateway,
+)
+from engine.infrastructure.state.sqlite_store import SqliteStateStore
+
+log = structlog.get_logger()
+
+
+#+------------------------------------------------------------------+
+#| Subcomandos                                                      |
+#+------------------------------------------------------------------+
+def cmd_status(args: argparse.Namespace, settings: EngineSettings) -> int:
+    preset = load_preset(args.preset or settings.preset)
+    gw = FakeGateway() if args.fake else RealMT5Gateway(settings.mt5)
+    try:
+        gw.connect()
+    except MT5NotAvailableError as exc:
+        log.error("mt5_indisponivel", detalhe=str(exc))
+        return 2
+    try:
+        st = get_status(gw, settings.mt5.symbol, preset)
+    finally:
+        gw.shutdown()
+
+    log.info("engine_status",
+             versao=__version__,
+             preset=preset.name,
+             conta=st.account.login, servidor=st.account.server,
+             saldo=f"{st.account.balance:,.2f} {st.account.currency}",
+             simbolo=st.symbol, candles=st.bars_loaded,
+             ultimo_candle=st.last_bar_time, fechamento=st.last_close)
+    if st.reading:
+        log.info("detector",
+                 z=round(st.reading.zscore, 2),
+                 media=round(st.reading.mean, 1),
+                 desvio=round(st.reading.std, 1),
+                 volume=st.reading.volume,
+                 candle_sinal=st.reading.is_signal)
+    else:
+        log.info("detector", estado="janela incompleta (aguardando historico)")
+    return 0
+
+
+def cmd_check_config(args: argparse.Namespace, settings: EngineSettings) -> int:
+    preset = load_preset(args.preset or settings.preset)
+    log.info(
+        "preset_valido",
+        nome=preset.name,
+        estrategia=preset.strategy,
+        detector=preset.detector.model_dump(mode="json"),
+        session=preset.session.model_dump(mode="json"),
+        entry=preset.entry.model_dump(mode="json"),
+        stop=preset.stop.model_dump(mode="json"),
+        take_profit=preset.take_profit.model_dump(mode="json"),
+        risk=preset.risk.model_dump(mode="json"),
+        regions=preset.regions.model_dump(mode="json"),
+    )
+    return 0
+
+
+def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
+    """Loop principal — conecta, processa ticks, decide e executa.
+
+    --dry-run: usa FakeGateway (não conecta em MT5)
+    --fast:    não dorme entre iterações (para testes)
+    --max-ticks N: para após N iterações (0 = infinito)
+    --db PATH: caminho do SQLite (default: engine.db)
+    """
+    preset = load_preset(args.preset or settings.preset)
+    symbol = settings.mt5.symbol
+
+    gw: BrokerGateway
+    if args.dry_run:
+        gw = FakeGateway()
+    else:
+        gw = RealMT5Gateway(settings.mt5)
+
+    try:
+        gw.connect()
+    except MT5NotAvailableError as exc:
+        log.error("mt5_indisponivel", detalhe=str(exc))
+        return 2
+
+    store = SqliteStateStore(args.db or "engine.db")
+    session = TradingSession(preset, state_store=store)
+    executor = RealExecutor(gw, preset)
+    poller = TradeEventPoller()
+    detector = VolumeStdDetector(
+        length=preset.detector.length,
+        std_ref=preset.detector.std_ref,
+        source=preset.detector.volume_source,
+    )
+
+    sleep_s = 0.0 if args.fast else (args.poll_interval or 1.0)
+    max_ticks = args.max_ticks or 0
+    last_bar_time: datetime | None = None
+    last_poll_time = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
+    ticks = 0
+    end_of_day_done_today: datetime | None = None
+
+    log.info("engine_run_start",
+             symbol=symbol, dry_run=args.dry_run, preset=preset.name,
+             max_ticks=max_ticks, poll_interval=sleep_s)
+
+    try:
+        while True:
+            ticks += 1
+            if max_ticks > 0 and ticks > max_ticks:
+                log.info("engine_run_max_ticks", ticks=ticks)
+                break
+
+            try:
+                tick = gw.symbol_info_tick(symbol)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("tick_falhou", erro=str(exc))
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+                continue
+
+            now = tick.time
+            snapshot = MarketSnapshot(ask=tick.ask, bid=tick.bid, now=now)
+
+            try:
+                bars = gw.closed_bars(symbol, preset.detector.timeframe, 1)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("bars_falhou", erro=str(exc))
+                bars = []
+
+            if bars:
+                last = bars[0]
+                if last_bar_time is None or last.time > last_bar_time:
+                    last_bar_time = last.time
+                    reading = detector.on_bar_closed(last)
+                    if reading is not None:
+                        session.on_bar_closed(last, reading.zscore, now)
+
+            decision = session.on_tick(snapshot)
+            if decision.intent is not None:
+                result = executor.execute(decision.intent, symbol=symbol)
+                if result.is_ok:
+                    session.notify_trade_opened(
+                        now=snapshot.now,
+                        region_bar_time=decision.intent.bar_time,
+                    )
+
+            try:
+                events = poller.poll(
+                    gw, since=last_poll_time, symbol=symbol, magic=0,
+                )
+                last_poll_time = now
+            except Exception as exc:  # noqa: BLE001
+                log.warning("poller_falhou", erro=str(exc))
+                events = []
+
+            for ev in events:
+                session.on_trade_event(ev, now=now)
+
+            if preset.session.close_outside:
+                cur_time = now.time()
+                sess_window = preset.session.window
+                in_window = (
+                    sess_window.start <= cur_time < sess_window.end
+                    if sess_window.start < sess_window.end
+                    else cur_time >= sess_window.start or cur_time < sess_window.end
+                )
+                if not in_window:
+                    today = now.date()
+                    if end_of_day_done_today is None or end_of_day_done_today.date() != today:
+                        end_of_day_done_today = now
+                        results = executor.close_all_at_end_of_day(symbol, now)
+                        for r in results:
+                            if r.is_ok:
+                                session.notify_position_closed(now)
+                        log.info("end_of_day_closed", n=len(results))
+
+            session.save_state()
+
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+
+    except KeyboardInterrupt:
+        log.info("engine_run_interrupted")
+    finally:
+        try:
+            session.save_state()
+        except Exception:  # noqa: BLE001
+            pass
+        store.close()
+        gw.shutdown()
+
+    return 0
+
+
+def cmd_shadow(args: argparse.Namespace, settings: EngineSettings) -> int:
+    """Roda o motor Python em paralelo ao EA e gera relatório de divergências.
+
+    Requer MT5 aberto (não funciona com --dry-run).
+    O Python coloca ordens com seu próprio magic; o EA com `--ea-magic`.
+    Ao fim de `--duration` minutos, compara `history_deals` dos dois e gera JSON.
+    """
+    ea_magic = args.ea_magic
+    py_magic = args.py_magic
+    duration_min = args.duration
+
+    preset = load_preset(args.preset or settings.preset)
+    symbol = settings.mt5.symbol
+    gw = RealMT5Gateway(settings.mt5)
+    try:
+        gw.connect()
+    except MT5NotAvailableError as exc:
+        log.error("mt5_indisponivel", detalhe=str(exc))
+        return 2
+
+    store = SqliteStateStore(args.db or "engine_shadow.db")
+    session = TradingSession(preset, state_store=store)
+    executor = RealExecutor(gw, preset)
+    poller = TradeEventPoller()
+    detector = VolumeStdDetector(
+        length=preset.detector.length,
+        std_ref=preset.detector.std_ref,
+        source=preset.detector.volume_source,
+    )
+
+    start = datetime.now(tz=timezone.utc)
+    end = start + timedelta(minutes=duration_min)
+    py_trades: list = []
+    last_bar_time: datetime | None = None
+    last_poll_time = start - timedelta(minutes=5)
+
+    log.info("shadow_start", symbol=symbol,
+             ea_magic=ea_magic, py_magic=py_magic,
+             duration_min=duration_min)
+
+    try:
+        while datetime.now(tz=timezone.utc) < end:
+            tick = gw.symbol_info_tick(symbol)
+            now = tick.time
+            snapshot = MarketSnapshot(ask=tick.ask, bid=tick.bid, now=now)
+
+            bars = gw.closed_bars(symbol, preset.detector.timeframe, 1)
+            if bars:
+                last = bars[0]
+                if last_bar_time is None or last.time > last_bar_time:
+                    last_bar_time = last.time
+                    reading = detector.on_bar_closed(last)
+                    if reading is not None:
+                        session.on_bar_closed(last, reading.zscore, now)
+
+            decision = session.on_tick(snapshot)
+            if decision.intent is not None:
+                result = executor.execute(decision.intent, symbol=symbol)
+                if result.is_ok:
+                    py_trades.append(decision.intent)
+                    session.notify_trade_opened(
+                        now=snapshot.now,
+                        region_bar_time=decision.intent.bar_time,
+                    )
+
+            try:
+                events = poller.poll(
+                    gw, since=last_poll_time, symbol=symbol, magic=py_magic,
+                )
+                last_poll_time = now
+            except Exception as exc:  # noqa: BLE001
+                log.warning("poller_falhou", erro=str(exc))
+                events = []
+
+            for ev in events:
+                session.on_trade_event(ev, now=now)
+
+            session.save_state()
+            if args.poll_interval > 0:
+                time.sleep(args.poll_interval)
+    except KeyboardInterrupt:
+        log.info("shadow_interrupted")
+    finally:
+        session.save_state()
+        store.close()
+
+    # Coleta deals do EA na janela
+    try:
+        ea_deals = gw.history_deals(start, symbol=symbol, magic=ea_magic)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("history_deals_falhou", erro=str(exc))
+        ea_deals = []
+    gw.shutdown()
+
+    comparer = ShadowComparer()
+    report = comparer.compare(
+        ea_deals, py_trades,
+        start=start, end=end,
+        tolerance_points=args.tolerance_points,
+    )
+
+    report_dir = Path(args.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    ts = start.strftime("%Y%m%d_%H%M%S")
+    out = report_dir / f"shadow_{ts}.json"
+    out.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+
+    log.info(
+        "shadow_report",
+        matched=report.matched,
+        ea_only=report.ea_only,
+        py_only=report.py_only,
+        mismatches=report.mismatches,
+        match_rate=round(report.match_rate, 4),
+        report=str(out),
+    )
+    return 0
+
+
+#+------------------------------------------------------------------+
+#| Main                                                             |
+#+------------------------------------------------------------------+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="engine", description="Motor de trading")
+    parser.add_argument("--json", action="store_true", help="Diario em JSON")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    # status
+    p_status = sub.add_parser("status", help="Conta, simbolo e leitura do detector")
+    p_status.add_argument("--fake", action="store_true",
+                          help="Gateway sintetico (desenvolvimento sem MT5)")
+    p_status.add_argument("--preset", default=None)
+
+    # check-config
+    p_check = sub.add_parser("check-config", help="Valida o preset e mostra os parametros")
+    p_check.add_argument("--preset", default=None)
+
+    # run
+    p_run = sub.add_parser("run", help="Roda o motor em tempo real")
+    p_run.add_argument("--dry-run", action="store_true",
+                       help="Usa FakeGateway (não conecta em MT5)")
+    p_run.add_argument("--demo", action="store_true",
+                       help="Conecta em conta demo (RealMT5Gateway)")
+    p_run.add_argument("--preset", default=None)
+    p_run.add_argument("--db", default="engine.db",
+                       help="Caminho do SQLite (default: engine.db)")
+    p_run.add_argument("--poll-interval", type=float, default=1.0,
+                       help="Segundos entre iterações (default: 1.0)")
+    p_run.add_argument("--max-ticks", type=int, default=0,
+                       help="Para após N iterações (0 = infinito)")
+    p_run.add_argument("--fast", action="store_true",
+                       help="Não dorme entre iterações (para testes)")
+
+    # shadow
+    p_shadow = sub.add_parser("shadow", help="Modo sombra: compara decisões com EA")
+    p_shadow.add_argument("--ea-magic", type=int, required=True,
+                          help="Magic do EA (ex: 20260718)")
+    p_shadow.add_argument("--py-magic", type=int, default=0,
+                          help="Magic do Python (default: 0)")
+    p_shadow.add_argument("--duration", type=int, default=60,
+                          help="Duração em minutos (default: 60)")
+    p_shadow.add_argument("--poll-interval", type=float, default=2.0,
+                          help="Segundos entre iterações (default: 2.0)")
+    p_shadow.add_argument("--tolerance-points", type=float, default=2.0,
+                          help="Tolerância de preço (default: 2.0)")
+    p_shadow.add_argument("--report-dir", default="reports",
+                          help="Diretório dos relatórios (default: reports/)")
+    p_shadow.add_argument("--db", default="engine_shadow.db")
+    p_shadow.add_argument("--preset", default=None)
+
+    # version
+    sub.add_parser("version", help="Versao do motor")
+
+    args = parser.parse_args(argv)
+    settings = EngineSettings()
+    setup_logging(json_output=args.json or settings.log_json)
+
+    if args.cmd == "version":
+        print(__version__)
+        return 0
+    if args.cmd == "status":
+        return cmd_status(args, settings)
+    if args.cmd == "check-config":
+        return cmd_check_config(args, settings)
+    if args.cmd == "run":
+        return cmd_run(args, settings)
+    if args.cmd == "shadow":
+        return cmd_shadow(args, settings)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

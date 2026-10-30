@@ -1,0 +1,12 @@
+pydantic>=2.7
+pydantic-settings>=2.3
+PyYAML>=6.0
+structlog>=24.1
+
+[dev]
+pytest>=8.0
+ruff>=0.4
+mypy>=1.10
+
+[mt5]
+MetaTrader5>=5.0.45
