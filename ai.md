@@ -29,6 +29,7 @@ conta demo/real via MT5 e comparar resultado com o Strategy Tester do MT5.
 6. **Parciais** (tiers 1/2/3) + breakeven após Tier 1.
 7. **Reforço** no retorno à entrada (1x por trade, com TP/SL próprios).
 8. **Sizing** fixo ou by-risk (fixed_money / % do balance).
+9. **Validade por pregões reais** (calendário B3, feriados 2026-2027).
 
 ---
 
@@ -50,12 +51,12 @@ conta demo/real via MT5 e comparar resultado com o Strategy Tester do MT5.
 | **F5a** | Parciais (tiers 1/2/3) + breakeven após Tier 1 | ✅ fechado |
 | **F5b** | By-risk sizing (fixed_money + percent_balance) | ✅ fechado |
 | **F5c** | Reforço no retorno à entrada (`use_reentry`) | ✅ fechado |
-| **F5d** | Validade por pregões reais (calendário B3) | ⏳ **PRÓXIMO** |
-| **F5e** | Slippage/spread no simulador | ⏳ pendente |
+| **F5d** | Validade por pregões reais (calendário B3) | ✅ fechado |
+| **F5e** | Slippage/spread no simulador + correções pendentes | ⏳ **PRÓXIMO** |
 | **F5f** | Multi-estratégia (`Strategy` Protocol + `StrategyRegistry`) | ⏳ pendente |
 | **F6** | Backtester próprio (sem MT5, com slippage realista) | ⏳ pendente |
 
-**Suíte de testes atual:** **~161 passed** (`uv run pytest -q`).
+**Suíte de testes atual:** **~167 passed** (`uv run pytest -q`).
 
 ---
 
@@ -67,7 +68,8 @@ src/engine/
 │   ├── shared/
 │   │   └── types.py                 # Bar, Side, VolumeSource, MarketSnapshot
 │   ├── risk/
-│   │   └── calendar.py              # TradingWindow
+│   │   ├── calendar.py              # TradingWindow (+ session_shift)
+│   │   └── exchange_calendar.py     # B3Calendar (feriados 2026-2027) — F5d
 │   ├── state/
 │   │   └── store.py                 # StateStore (Protocol) + SessionSnapshot (F3c)
 │   └── strategy/
@@ -115,11 +117,11 @@ presets/
 └── stddev_v510_default.yaml         # todos os inputs do EA v4.60 comentados
 tests/
 ├── fixtures/v510_expected.csv       # 679 candles WIN$N M1 + z-score do MT5
-├── test_calendar.py
+├── test_calendar.py                 # TradingWindow + B3Calendar + session_shift (F5d)
 ├── test_detector.py
 ├── test_presets.py                  # bounds + validadores cruzados
 ├── test_golden_v510.py              # paridade bit-a-bit vs EA v4.60
-├── test_regions.py                  # RegionManager
+├── test_regions.py                  # RegionManager (+ validade por pregões reais)
 ├── test_pricing.py                  # entry/SL/TP + candle grande
 ├── test_trading_session.py          # filtros + TradeIntent + on_trade_event
 ├── test_simulation.py               # simulador
@@ -147,15 +149,28 @@ tests/
 - Fórmula de uma passada: `var = (sumsq - sum*mean)/(n-1)`.
 - **Se mexer nisso, `test_golden_v510.py` falha.** É de propósito.
 
+### `B3Calendar` (F5d)
+- Lista **hardcoded** de feriados 2026-2027. Atualiza uma vez por ano.
+- `is_trading_day(d)` — segunda a sexta, exceto feriados.
+- `trading_days_between(start, end)` — conta pregões (negativo se `start > end`).
+- **Não** move feriados que caem em fim de semana.
+- `Feriados 2026`: 1/1, 16-17/2 (Carnaval), 3/4 (Sexta-Santa), 21/4, 1/5, 4/6 (Corpus Christi), 7/9, 12/10, 2/11, 15/11, 20/11 (Consciência Negra), 25/12.
+- `Feriados 2027`: 1/1, 8-9/2 (Carnaval), 26/3 (Sexta-Santa), 21/4, 1/5, 27/5 (Corpus Christi), 7/9, 12/10, 2/11, 15/11, 20/11, 25/12.
+
+### `TradingWindow.session_shift(bar_time, now, calendar)`
+- Retorna `calendar.trading_days_between(bar_time.date(), now.date())`.
+- Se `calendar is None`, fallback para **dias corridos** (comportamento antigo).
+- **Não** usa `start`/`end` do `TradingWindow` (só `bar_time` e `now`).
+- **TODO F5e:** transformar em `@staticmethod` (elimina o `TradingWindow(start=time(0,0), end=time(0,0))` feio no `regions.py`).
+
 ### `RegionManager`
 - Fila `dict[bar_time, RegionState]`, limite `max_loc=12` (paridade com EA).
 - Fila cheia substitui a de **menor volume** (governança por volume).
 - `RegionPhase` é **enum explícito** (WAITING_BREAKOUT / BROKEN / CONSUMED / REARMED).
   **Não** use flags booleanas — gera estados impossíveis.
-- **NÃO** aplica filtros de sessão (isso é `TradingSession`). Filtro de abertura
-  (`mute_open_min`) também é responsabilidade do `TradingSession`, não do manager.
-- Validade por pregões hoje usa dias corridos (aproximação). Refinar em F5d
-  com calendário de sessões (B3 tem feriados).
+- **NÃO** aplica filtros de sessão (isso é `TradingSession`).
+- **F5d:** `__init__` aceita `calendar: B3Calendar | None = None`. Se presente, `_is_within_validity` usa `session_shift`. Se `None`, fallback para dias corridos.
+- **⚠️ Pendência:** o `TradingSession` **não** passa `calendar=B3Calendar()` no `RegionManager`. Em produção, `_is_within_validity` continua usando dias corridos. **TODO F5e:** integrar.
 
 ### `TradingSession`
 - **Não** executa ordens. **Não** consulta MT5.
@@ -203,7 +218,7 @@ tests/
 ### `StateStore` (F3c)
 - `StateStore` é **Protocol** (domínio puro). Implementações em `infrastructure/state/`.
 - `SessionSnapshot` é `frozen` e serializável (5 campos: `last_sl_time`, `trades_today`, `current_day`, `current_entry_region`, `current_entry_position`).
-- **Não persiste** `_current_entry_price`, `_current_is_buy`, `_reentry_armed`, `_reentry_done`, `_partials_filled` (F5a/F5c). Em reinício no meio de trade, esses estados são perdidos. TODO para F5e/F5f.
+- **Não persiste** `_current_entry_price`, `_current_is_buy`, `_reentry_armed`, `_reentry_done`, `_partials_filled` (F5a/F5c). Em reinício no meio de trade, esses estados são perdidos. **TODO F5e.**
 - Datas sempre ISO 8601 UTC.
 - `SqliteStateStore` cria schema no `__init__` (`CREATE TABLE IF NOT EXISTS`).
 - `save_regions` faz `DELETE + INSERT` (idempotente). Não há migração de schema (F5).
@@ -268,6 +283,7 @@ tests/
 - SL **ganha empate** dentro do mesmo tick (conservador, MT5-style).
 - Parciais: **não implementadas no simulador ainda** (F5a cobriu `RealExecutor`; simular parciais no `SimulatedExecutor` fica para F5e).
 - Volume = fixed_contracts (by-risk só em `RealExecutor`).
+- Slippage/spread: **não implementados** (F5e).
 
 ### `FakeGateway.place_order` — `is_stop` por comment (F5c)
 - Detecta stop por string: `not is_limit and ("sl" in comment or "stop" in comment)`.
@@ -276,7 +292,7 @@ tests/
 
 ### Coisas que **NÃO podem ser quebradas**
 1. `test_golden_v510.py` — paridade bit-a-bit com EA. **Sagrado.**
-2. `test_regions.py` — semântica do `RegionManager`. **Sagrado.**
+2. `test_regions.py` — semântica do `RegionManager` + validade por pregões. **Sagrado.**
 3. `test_presets.py` — validadores cruzados. **Sagrado.**
 4. `test_pricing.py` — fórmulas de entry/SL/TP. **Sagrado.**
 5. `test_simulation.py` — semântica de SL/TP no simulador. **Sagrado.**
@@ -288,95 +304,71 @@ tests/
 11. `test_shadow.py` — ShadowComparer. **Sagrado.**
 12. `test_partials.py` — PartialSpec + integração. **Sagrado.**
 13. `test_reentry.py` — `_maybe_reentry` + `place_reentry_*`. **Sagrado.**
+14. `test_calendar.py` — `TradingWindow` + `B3Calendar` + `session_shift`. **Sagrado.**
 
-Antes de qualquer mudança, **rode `uv run pytest -q`** e confirme que continua ~161 passed.
+Antes de qualquer mudança, **rode `uv run pytest -q`** e confirme que continua ~167 passed.
 
 ---
 
-## 5. Próximo passo: F5d — Validade por pregões reais (calendário B3)
+## 5. Próximo passo: F5e — Slippage/spread + correções pendentes
 
-**Objetivo:** validade de regiões por **pregões reais** (não mais dias corridos).
+**Objetivo:** implementar slippage/spread no simulador **e** fechar 3 TODOs acumulados.
 
-**O problema que F5d resolve:**
-Hoje o `RegionManager._is_within_validity` usa
-`(now.date() - state.bar_time.date()).days <= valid_days`. Isso **conta fins de semana e feriados**, o que é impreciso:
-- Região criada na sexta, `valid_days=2` → expira no domingo (mas segunda ainda é "válida" pelo EA).
-- Feriados (Carnaval, Natal, etc.) contam como dia útil.
+**Escopo (3 partes):**
 
-**Fórmula correta (EA v4.60):** `SessionShift(bar_time) <= valid_days`, onde `SessionShift` conta **pregões** (dias úteis da B3).
+### Parte 1 — Slippage/spread no simulador (obrigatório)
 
-**Arquitetura:**
+`SimulatedExecutor` ganha `slippage_points` e `spread_points`:
+- **Fill de limite:** `entry_price ± slippage` (pior caso)
+- **Fill de mercado:** `ask + slippage` (compra) / `bid - slippage` (venda)
+- **Spread:** `MarketSnapshot.spread` já existe, mas o simulador ignora.
 
-```
-src/engine/domain/risk/
-├── exchange_calendar.py    # NOVO: B3Calendar (feriados 2026-2027)
-└── calendar.py             # +session_shift(bar_time, now, calendar)
+**Arquivos:**
+- `src/engine/application/simulation.py` — `SimulatedExecutor.__init__(preset, slippage_points=0.0, spread_points=0.0)`
+- `tests/test_simulation.py` — +3 testes com slippage
 
-src/engine/domain/strategy/regions.py    # patch: _is_within_validity usa calendar
+### Parte 2 — `OrderRequest.is_stop` (recomendado)
 
-tests/test_calendar.py                   # +4 testes com feriados
-tests/test_regions.py                    # +2 testes (validade com feriado)
-```
+Hoje o `FakeGateway.place_order` detecta stop por `"sl" in comment`. **Frágil.**
 
-**Componentes:**
+**Fix:** adicionar `is_stop: bool = False` no `OrderRequest`. O `RealMT5Gateway` usa `ORDER_TYPE_BUY_STOP`/`SELL_STOP`. O `RealExecutor.place_reentry_exits` passa `is_stop=True` no SL.
 
-1. **`B3Calendar`** — lista de feriados (Carnaval, Sexta-Santa, Corpus Christi, 7/9, 12/10, 2/11, 15/11, 25/12, 1/1, etc.).
-   - `is_trading_day(date) -> bool`
-   - `trading_days_between(start, end) -> int`
+**Arquivos:**
+- `src/engine/infrastructure/mt5/gateway.py` — `OrderRequest.is_stop`
+- `src/engine/infrastructure/mt5/fake.py` — usa `is_stop` (sem string)
+- `src/engine/infrastructure/mt5/gateway.py` (Real) — trata `is_stop`
+- `src/engine/application/executor.py` — passa `is_stop=True` no SL
 
-2. **`TradingWindow.session_shift(bar_time, now, calendar) -> int`** — número de pregões entre `bar_time` e `now`.
+### Parte 3 — Integração do calendar no `TradingSession` + persistência de parciais/reforço
 
-3. **`RegionManager._is_within_validity`** — usa `session_shift(bar_time, now) <= valid_days`.
+**3a. Calendar no `TradingSession`:**
+- `TradingSession.__init__` ganha `calendar: B3Calendar | None = None`
+- Se `None`, cria `B3Calendar()` por default (produção)
+- O `RegionManager` recebe o calendar
+- O `engine run` e `engine shadow` podem passar `calendar` explicitamente
 
-**Decisões já tomadas para F5d:**
-1. Feriados B3 2026-2027 hardcoded (lista estática, atualiza uma vez por ano).
-2. `B3Calendar` é injetado no `RegionManager` (opcional; se `None`, usa dias corridos como fallback).
-3. Fins de semana sempre ignorados (sábado/domingo não são pregões).
-4. Feriados que caem em fim de semana **não** são movidos (só conta o dia real).
-5. Testes cobrem: sexta→segunda, feriado no meio, `valid_days=0` (só o dia).
+**3b. Persistência de parciais/reforço:**
+- `SessionSnapshot` ganha 5 campos: `current_entry_price`, `current_is_buy`, `reentry_armed`, `reentry_done`, `partials_filled`
+- `save_state()` / `_load_state()` serializam/desserializam
+- Schema SQLite ganha colunas (migração via `ALTER TABLE`)
 
-**Arquivos a criar/modificar em F5d:**
+**Arquivos (parte 3):**
+- `src/engine/domain/state/store.py` — `SessionSnapshot` +5 campos
+- `src/engine/application/trading_session.py` — `calendar` no `__init__` + persistência
+- `src/engine/infrastructure/state/sqlite_store.py` — schema + serialização
+- `src/engine/infrastructure/state/memory_store.py` — nada (já funciona com dataclass)
 
-| Arquivo | Ação |
-|---|---|
-| `src/engine/domain/risk/exchange_calendar.py` | **criar** |
-| `src/engine/domain/risk/calendar.py` | patch (+`session_shift`) |
-| `src/engine/domain/strategy/regions.py` | patch (`_is_within_validity` com calendar) |
-| `tests/test_calendar.py` | +4 testes |
-| `tests/test_regions.py` | +2 testes (validade com feriado) |
-
-**Critérios de aceite de F5d:**
-- `uv run pytest tests/test_calendar.py -v` → **8 passed** (4 atuais + 4 novos)
-- `uv run pytest tests/test_regions.py -v` → **18 passed** (16 atuais + 2 novos)
-- `uv run pytest -q` → **~167 passed**
-- `test_golden_v510.py`, `test_presets.py`, `test_pricing.py` continuam verdes.
+**Critérios de aceite de F5e:**
+- `uv run pytest -q` → **~172 passed** (167 + 5: 3 slippage + 2 novos de `is_stop`/calendar)
+- `test_golden_v510.py`, `test_regions.py`, `test_pricing.py`, `test_simulation.py` continuam verdes.
 
 ---
 
 ## 6. Roadmap detalhado das fases restantes
 
-### F5d — Validade por pregões reais (~1-2h)
+### F5e — Slippage/spread + correções (~4-6h)
 
 (Detalhado na seção 5.)
-
----
-
-### F5e — Slippage/spread no simulador (~2-3h)
-
-**O que implementa:** `SimulatedExecutor` ganha `slippage_points`, `spread_points`.
-
-**Arquivos:**
-- `src/engine/application/simulation.py` — `SimulatedExecutor.__init__(preset, slippage_points=0.0, spread_points=0.0)`.
-- Fill de limite: `entry_price ± slippage` (pior caso).
-- Fill de mercado: `ask + slippage` (compra) / `bid - slippage` (venda).
-- `tests/test_simulation.py` — +3 testes com slippage.
-
-**Também em F5e:**
-- **Correção definitiva do `is_stop`** — adicionar campo `is_stop: bool` no `OrderRequest` (elimina detecção por string `"sl"`).
-- **Persistência de parciais/reforço** no `save_state()` — se o motor reiniciar no meio de um trade, o `_reentry_armed`/`_reentry_done`/`_partials_filled` são perdidos.
-
-**Critérios de aceite:**
-- `uv run pytest -q` → ~170 passed.
 
 ---
 
@@ -391,7 +383,7 @@ tests/test_regions.py                    # +2 testes (validade com feriado)
 - `tests/test_registry.py` — NOVO (~4 testes).
 
 **Critérios de aceite:**
-- `uv run pytest -q` → ~174 passed.
+- `uv run pytest -q` → ~176 passed.
 - `engine run --strategies=stddev_v510,outra` roda 2 estratégias sem conflito de magic.
 
 ---
@@ -424,8 +416,9 @@ tests/test_regions.py                    # +2 testes (validade com feriado)
 
 ```powershell
 # Testes
-uv run pytest -q                              # suíte completa (~161 passed hoje)
+uv run pytest -q                              # suíte completa (~167 passed hoje)
 uv run pytest tests/test_golden_v510.py -v    # paridade do detector
+uv run pytest tests/test_calendar.py -v       # calendário B3 (F5d)
 uv run pytest tests/test_state.py -v          # persistência
 uv run pytest tests/test_run.py -v            # engine run
 uv run pytest tests/test_shadow.py -v         # modo sombra
@@ -443,7 +436,7 @@ uv run engine shadow --ea-magic 20260718 --duration 60   # modo sombra
 
 # Git
 git add -A
-git commit -m "feat(F5c): reforço no retorno à entrada (161 passed)"
+git commit -m "feat(F5d): B3Calendar + validade por pregões reais (167 passed)"
 ```
 
 ---
@@ -454,30 +447,40 @@ git commit -m "feat(F5c): reforço no retorno à entrada (161 passed)"
 ```powershell
 uv run pytest -q
 ```
-Deve mostrar **~161 passed**. Se não, **PARE** e investigue o que quebrou antes de
+Deve mostrar **~167 passed**. Se não, **PARE** e investigue o que quebrou antes de
 continuar.
 
 **Passo 2 — Ler este `AI.md` inteiro.** Principalmente seções 4 (decisões) e
-5 (F5d — calendário B3, o próximo sub-passo).
+5 (F5e — slippage/spread + correções).
 
 **Passo 3 — Rodar `uv run engine check-config`** para confirmar que o preset
 carrega (7 seções no log).
 
-**Passo 4 — Começar F5d pelos arquivos novos:**
-1. Criar `src/engine/domain/risk/exchange_calendar.py` (`B3Calendar` com feriados).
-2. Patch `src/engine/domain/risk/calendar.py` (`session_shift`).
-3. Patch `src/engine/domain/strategy/regions.py` (`_is_within_validity` com calendar).
-4. Patch `tests/test_calendar.py` (4 testes com feriados).
-5. Patch `tests/test_regions.py` (2 testes com validade).
-6. Rodar `uv run pytest tests/test_calendar.py tests/test_regions.py -v`.
-7. Rodar `uv run pytest -q` → ~167 passed.
+**Passo 4 — Começar F5e pela parte 1 (slippage/spread):**
+1. Patch `src/engine/application/simulation.py` — `SimulatedExecutor.__init__(slippage_points, spread_points)`.
+2. Patch `tests/test_simulation.py` — +3 testes com slippage.
+3. Rodar `uv run pytest tests/test_simulation.py -v` → 10 passed.
+4. Rodar `uv run pytest -q` → ~170 passed.
 
-**Passo 5 — Se algo quebrar:**
+**Passo 5 — Parte 2 (`is_stop`):**
+1. Patch `src/engine/infrastructure/mt5/gateway.py` — `OrderRequest.is_stop`.
+2. Patch `src/engine/infrastructure/mt5/fake.py` — usa `is_stop` (sem string).
+3. Patch `src/engine/infrastructure/mt5/gateway.py` (Real) — trata `is_stop`.
+4. Patch `src/engine/application/executor.py` — passa `is_stop=True` no SL.
+5. Rodar `uv run pytest -q` → ~170 passed.
+
+**Passo 6 — Parte 3 (calendar + persistência):**
+1. Patch `src/engine/domain/state/store.py` — `SessionSnapshot` +5 campos.
+2. Patch `src/engine/application/trading_session.py` — `calendar` + persistência.
+3. Patch `src/engine/infrastructure/state/sqlite_store.py` — schema + serialização.
+4. Rodar `uv run pytest -q` → ~172 passed.
+
+**Passo 7 — Se algo quebrar:**
 - Rodar `uv run pytest -q -x` (para no primeiro erro)
 - Comparar com `test_golden_v510.py` se for detector, com `test_regions.py` se
   for região, com `test_presets.py` se for config
 - **NÃO** consertar teste quebrando código de produção. Se um teste antigo
-  quebrou, é bug de F5d, não do teste.
+  quebrou, é bug de F5e, não do teste.
 
 ---
 
@@ -487,19 +490,24 @@ carrega (7 seções no log).
 Cada teste que chama `_build_intent()` ou `_mk_sessao_com_regiao()` loga `breakout`
 2×. **Não é bug**, é o teste chamando helpers 2×. Cosmético.
 
-### `_is_within_validity` usa dias corridos
-Aproximação de "pregões anteriores". Refinar em **F5d** com calendário B3.
-**É o próximo passo.**
+### `TradingSession` não injeta `B3Calendar` no `RegionManager`
+O `RegionManager` aceita `calendar`, mas o `TradingSession.__init__` **não** passa. Em produção, `_is_within_validity` usa **dias corridos**. **TODO F5e.**
+
+### `session_shift` usa `TradingWindow(start=time(0,0), end=time(0,0))`
+Gambiarra para não precisar mudar a assinatura. **TODO F5e:** transformar em `@staticmethod`.
 
 ### `FakeGateway` detecta stop por string (`"sl"` ou `"stop"`)
 O `FakeGateway.place_order` usa `is_stop = not is_limit and ("sl" in comment or "stop" in comment)`.
 Isso é **frágil** — depende do comment. **TODO F5e:** adicionar campo `is_stop` no `OrderRequest`.
 
-### `ReentryIntent` não persiste no SQLite
-O `_current_entry_price`, `_current_is_buy`, `_reentry_armed`, `_reentry_done` **não são salvos** no `save_state()`. Se o motor reiniciar no meio de um trade, o reforço é perdido. **TODO F5e.**
+### `SessionSnapshot` não persiste parciais/reforço
+O `_current_entry_price`, `_current_is_buy`, `_reentry_armed`, `_reentry_done`, `_partials_filled` **não são salvos** no `save_state()`. Se o motor reiniciar no meio de um trade, o reforço é perdido. **TODO F5e.**
 
 ### `SimulatedExecutor` não implementa parciais
 Só SL/TP final. F5e implementa.
+
+### `SimulatedExecutor` não implementa slippage/spread
+Só fill ingênuo. F5e implementa.
 
 ### `TradeIntent.volume = 0.0` antes do Executor
 O `TradingSession` **não** calcula volume (precisa de `SymbolInfo`). O
@@ -599,3 +607,7 @@ comportamento intencional (o `--dry-run` deve simular produção).
 14. **Reforço no `Poller`:** o comment do `Executor` é `engine_reentry` (entrada)
     e `engine_reentry_tp`/`engine_reentry_sl` (saídas). O `is_stop` do `FakeGateway`
     depende de `"sl"` no comment.
+15. **Calendário B3:** `B3Calendar` tem feriados hardcoded 2026-2027. Se rodar
+    em 2028+, adicione à lista.
+16. **`session_shift`:** usa `TradingWindow(start=time(0,0), end=time(0,0))` —
+    gambiarra. F5e transforma em `@staticmethod`.

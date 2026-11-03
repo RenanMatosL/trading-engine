@@ -4,12 +4,14 @@ Porte da estratégia **StdDevVolumeBreakout v4.60** para Python (API oficial
 MetaTrader5), arquitetado em DDD/bounded contexts para múltiplas estratégias
 plugáveis. Plano completo: `Plano_Motor_Trading_Python.md`.
 
-**Estado atual:** F0 → F5a concluídos. O motor **detecta** sinais (paridade
+**Estado atual:** F0 → F5d concluídos. O motor **detecta** sinais (paridade
 bit-a-bit com o EA), **gerencia** regiões, **orquestra** sessão, **simula**
 trades, **executa** ordens (real + fake), **reage** a fills/SL/TP,
 **persiste** estado em SQLite, **roda em loop** real, **compara** decisões
-com o EA em tempo real (modo sombra) e **opera com parciais** (tiers 1/2/3)
-com breakeven após Tier 1. F5b (by-risk sizing) é o próximo passo.
+com o EA em tempo real (modo sombra), **opera com parciais** (tiers 1/2/3)
+com breakeven após Tier 1, **opera com reforço** no retorno à entrada, e
+**gerencia validade de regiões por pregões reais** (calendário B3).
+F5e (slippage/spread no simulador + correções pendentes) é o próximo passo.
 
 ---
 
@@ -30,7 +32,7 @@ uv run engine status --fake       # sem MT5 (gateway sintético p/ desenvolvimen
 uv run engine run --dry-run --fast --max-ticks 10   # loop de teste sem MT5
 uv run engine run --demo --db engine_demo.db        # loop real em demo
 uv run engine shadow --ea-magic 20260718 --duration 60   # modo sombra
-uv run pytest -q                  # suíte completa (~148 testes)
+uv run pytest -q                  # suíte completa (~167 testes)
 ```
 
 Linux/macOS (desenvolvimento sem MT5): `uv pip install -e ".[dev]"` e usar `--fake`.
@@ -43,7 +45,9 @@ Linux/macOS (desenvolvimento sem MT5): `uv pip install -e ".[dev]"` e usar `--fa
 src/engine/
 ├── domain/                          # PURO: zero imports externos
 │   ├── shared/types.py              # Bar, Side, VolumeSource, MarketSnapshot
-│   ├── risk/calendar.py             # TradingWindow
+│   ├── risk/
+│   │   ├── calendar.py              # TradingWindow (+ session_shift)
+│   │   └── exchange_calendar.py     # B3Calendar (feriados 2026-2027) — F5d
 │   ├── state/store.py               # StateStore (Protocol) + SessionSnapshot (F3c)
 │   └── strategy/
 │       ├── detector.py              # VolumeStdDetector (paridade bit-a-bit EA)
@@ -58,14 +62,16 @@ src/engine/
 │
 ├── application/                     # orquestração (sem MT5, sem ordens)
 │   ├── status.py                    # get_status (F0/F1)
-│   ├── intent.py                    # TradeIntent, TickDecision, BarResult
+│   ├── intent.py                    # TradeIntent, ReentryIntent, TickDecision, BarResult
 │   ├── trading_session.py           # TradingSession (+ state_store + on_trade_event)
 │   ├── events.py                    # EventFeed, BarEvent, TickEvent (F2d)
 │   ├── simulation.py                # run_simulation, SimulatedExecutor (F2d)
-│   ├── trade_events.py              # EntryFilled, PartialFilled, StopLossHit,
-│   │                                #   TakeProfitHit, PositionClosed (F3b)
-│   ├── poller.py                    # TradeEventPoller (F3b)
-│   ├── executor.py                  # RealExecutor (+ close_all_at_end_of_day)
+│   ├── trade_events.py              # EntryFilled, PartialFilled, ReentryFilled,
+│   │                                #   ReentryExitFilled, StopLossHit,
+│   │                                #   TakeProfitHit, PositionClosed (F3b + F5c)
+│   ├── poller.py                    # TradeEventPoller (F3b + F5c)
+│   ├── executor.py                  # RealExecutor (+ close_all_at_end_of_day +
+│   │                                #   place_partial_orders + place_reentry_*)
 │   ├── shadow_report.py             # ShadowReport + Divergence (F4)
 │   ├── shadow.py                    # ShadowComparer (F4)
 │   └── partial_spec.py              # PartialSpec + make_partial_specs (F5a)
@@ -87,11 +93,11 @@ presets/
 └── stddev_v510_default.yaml         # todos os inputs do EA v4.60 comentados
 tests/
 ├── fixtures/v510_expected.csv       # 679 candles WIN$N M1 + z-score do MT5
-├── test_calendar.py
+├── test_calendar.py                 # TradingWindow + B3Calendar + session_shift (F5d)
 ├── test_detector.py
 ├── test_presets.py
 ├── test_golden_v510.py              # paridade bit-a-bit vs EA v4.60
-├── test_regions.py
+├── test_regions.py                  # RegionManager + validade por pregões reais
 ├── test_pricing.py
 ├── test_trading_session.py
 ├── test_simulation.py
@@ -100,7 +106,8 @@ tests/
 ├── test_state.py
 ├── test_run.py
 ├── test_shadow.py                   # modo sombra
-└── test_partials.py                 # parciais + integração (F5a)
+├── test_partials.py                 # parciais + integração (F5a)
+└── test_reentry.py                  # reforço (F5c)
 ```
 
 ---
@@ -124,8 +131,7 @@ tests/
 ### F2a ✔ — Preset completo
 - 7 seções em `StdDevV510Preset`: `detector`, `session`, `entry`, `stop`,
   `take_profit`, `risk`, `regions`
-- **Validadores cruzados** replicam o `OnInit()` do EA (combinações inválidas
-  de entry/SL, soma de parciais, pontos crescentes, offsets de candle grande)
+- **Validadores cruzados** replicam o `OnInit()` do EA
 - `presets/stddev_v510_default.yaml` mapeia cada valor ao input MQL5
 - `engine check-config` audita todas as 7 seções
 
@@ -142,7 +148,6 @@ tests/
 - `on_tick(snapshot)` — rompimento, TTL, filtros de sessão, `TradeIntent`
 - Filtros: horário operacional, entry block, cooldown pós-SL, limite diário,
   carry delay, `mute_open_min`
-- `TradeIntent` (frozen): região + nível de entrada + SL + TP + volume + as_pending
 
 ### F2d ✔ — Simulador (F6-lite)
 - `EventFeed` (`BarEvent | TickEvent`) em ordem cronológica
@@ -200,6 +205,35 @@ tests/
   após Tier 1 (se `breakeven_after_partial=True`)
 - 18 testes (`test_partials.py`: 12 spec + 6 integração)
 
+### F5b ✔ — By-risk sizing
+- `_compute_volume` com `SizingMode.BY_RISK`:
+  - `sl_dist = abs(entry - stop_loss)`
+  - `loss_per_lot = (sl_dist / tick_size) * tick_value`
+  - `risk_money = risk_value` (fixed) ou `balance * risk_value / 100` (percent)
+  - `lot = risk_money / loss_per_lot`, normalizado
+- `total_contracts` **ignorado** em by-risk (espelha o EA)
+- `risk_value=0` ou `sl_dist=0` → `lots_min` (fallback)
+- 5 testes (`test_executor.py`: fixed_money, percent_balance, respeita_lots_min,
+  sl_dist_zero, ignora_total_contracts)
+
+### F5c ✔ — Reforço no retorno à entrada
+- `ReentryIntent` emitida pelo `TradingSession._maybe_reentry` quando:
+  - Preço avança `reentry_arm_points` a favor (arma).
+  - Preço volta ao `entry_price` (dispara).
+- `engine run` materializa via `executor.place_reentry_order(...)`.
+- No fill (`ReentryFilled`), `engine run` chama `executor.place_reentry_exits(...)`
+  (TP/SL próprios).
+- 1 reforço por trade (`_reentry_done=True`).
+- 7 tipos de evento no poller (F3b: 5, F5c: +2).
+- 6 testes (`test_reentry.py`)
+
+### F5d ✔ — Validade por pregões reais (calendário B3)
+- `B3Calendar` — feriados 2026-2027 hardcoded
+- `TradingWindow.session_shift(bar_time, now, calendar)` — pregões entre datas
+- `RegionManager._is_within_validity` usa `session_shift` (se `calendar` injetado)
+- Fallback para dias corridos (se `calendar is None`, preserva testes antigos)
+- 4 testes (`test_calendar.py`) + 2 testes (`test_regions.py`)
+
 ---
 
 ## Decisões de arquitetura (registradas)
@@ -211,7 +245,7 @@ tests/
 | Estado | SQLite em F3c (regiões + session_state), com schema auto-criado |
 | Barramento | Interno síncrono; RabbitMQ só se distribuir (F5+) |
 | Semântica detector | **Idêntica ao EA** (janela inclusiva, desvio amostral, fórmula de uma passada) |
-| Sizing | Fixo (`total_contracts * lot_per_contract`); by-risk em F5b |
+| Sizing | Fixo (`total_contracts * lot_per_contract`) **ou** by-risk (fixed_money / % balance) |
 | Modelo de execução | SL ganha empate no simulador (conservador, MT5-style) |
 | `RegionManager` | dict mutável + enum de fase (evita flags impossíveis); `MAX_LOC=12` |
 | Filtro de abertura | `mute_open_min` no `TradingSession` (não no `RegionManager`) |
@@ -219,6 +253,8 @@ tests/
 | Datas | Sempre `aware UTC` nos métodos públicos; normalizar `since` naive |
 | Modo sombra | Magic do EA por parâmetro (não hardcoded); comparação por `bar_time` |
 | Parciais (F5a) | `comment=engine_partial_N` no `place_partial_orders`; `_infer_tier_from_comment` extrai o N |
+| Reforço (F5c) | `comment=engine_reentry` (entrada) e `engine_reentry_tp`/`engine_reentry_sl` (saídas) |
+| Calendário B3 (F5d) | Feriados 2026-2027 hardcoded; atualizar uma vez por ano |
 
 ---
 
@@ -238,10 +274,10 @@ tests/
 | **F3d** | `engine run` (loop real + demo) | ✔ |
 | **F4** | Modo sombra (compara decisões com EA em tempo real) | ✔ |
 | **F5a** | Parciais (tiers 1/2/3) + breakeven após Tier 1 | ✔ |
-| **F5b** | By-risk sizing | ⏳ **próximo** |
-| **F5c** | Reforço no retorno à entrada (`use_reentry`) | ⏳ pendente |
-| **F5d** | Validade por pregões reais (calendário B3) | ⏳ pendente |
-| **F5e** | Slippage/spread no simulador | ⏳ pendente |
+| **F5b** | By-risk sizing (fixed_money + percent_balance) | ✔ |
+| **F5c** | Reforço no retorno à entrada (`use_reentry`) | ✔ |
+| **F5d** | Validade por pregões reais (calendário B3) | ✔ |
+| **F5e** | Slippage/spread no simulador + correções pendentes | ⏳ **próximo** |
 | **F5f** | Multi-estratégia (`Strategy` Protocol + `StrategyRegistry`) | ⏳ pendente |
 | **F6** | Backtester próprio (sem MT5, com slippage realista) | ⏳ pendente |
 
@@ -250,31 +286,34 @@ tests/
 ## Suíte de testes
 
 ```powershell
-uv run pytest -q                              # ~148 testes
+uv run pytest -q                              # ~167 testes
 uv run pytest -v                              # verbose
 uv run pytest tests/test_golden_v510.py -v    # só paridade do detector
+uv run pytest tests/test_calendar.py -v       # calendário B3 (F5d)
 uv run pytest tests/test_state.py -v          # persistência
 uv run pytest tests/test_run.py -v            # engine run
 uv run pytest tests/test_shadow.py -v         # modo sombra
 uv run pytest tests/test_partials.py -v       # parciais (F5a)
+uv run pytest tests/test_reentry.py -v        # reforço (F5c)
 ```
 
 Cobertura por módulo:
 
-- `test_calendar.py` — `TradingWindow.is_open` (incl. cruzamento meia-noite)
+- `test_calendar.py` — `TradingWindow.is_open` + `B3Calendar` + `session_shift` (F5d)
 - `test_detector.py` — detector (média, desvio amostral, sinal)
-- `test_presets.py` — bounds + validadores cruzados (combinações inválidas)
+- `test_presets.py` — bounds + validadores cruzados
 - `test_golden_v510.py` — paridade bit-a-bit com EA v4.60 (500 candles)
-- `test_regions.py` — RegionManager (criação, rompimento, governança, TTL, rearme)
+- `test_regions.py` — RegionManager + validade por pregões reais
 - `test_pricing.py` — entry (5 modos), SL (3 modos), TP, candle grande
-- `test_trading_session.py` — filtros de sessão + TradeIntent + on_trade_event
+- `test_trading_session.py` — filtros + TradeIntent + on_trade_event
 - `test_simulation.py` — simulador (SL, TP, empate, end-to-end)
-- `test_executor.py` — executor (place/cancel/modify/close)
-- `test_poller.py` — TradeEventPoller (classificação de deals)
+- `test_executor.py` — executor (place/cancel/modify/close + by-risk)
+- `test_poller.py` — TradeEventPoller (classificação de deals + reentry)
 - `test_state.py` — StateStore + integração com TradingSession
 - `test_run.py` — engine run (dry-run, new bar, intent→exec, reação a SL)
 - `test_shadow.py` — ShadowComparer (match, ea_only, py_only, mismatch, tolerância)
 - `test_partials.py` — PartialSpec + integração (TradeIntent, Executor, Poller, Session)
+- `test_reentry.py` — `_maybe_reentry` + `place_reentry_order` + `place_reentry_exits`
 
 ---
 
