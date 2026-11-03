@@ -263,6 +263,8 @@ class RealExecutor:
         tp_res = self._gw.place_order(tp_req)
 
         # SL: ordem stop no sentido contrário
+        # SL: ordem stop no sentido contrário
+        # SL: ordem stop no sentido contrário (F5e: is_stop=True)
         sl_req = OrderRequest(
             symbol=symbol,
             is_buy=not is_buy,
@@ -270,7 +272,8 @@ class RealExecutor:
             price=sl_price,
             stop_loss=0.0,
             take_profit=0.0,
-            is_limit=False,  # stop (mercado se atingido)
+            is_limit=False,
+            is_stop=True,                # F5e: stop explícito
             comment="engine_reentry_sl",
             magic=0,
         )

@@ -25,14 +25,19 @@ from engine.domain.strategy.location import RegionState
 class SessionSnapshot:
     """Estado serializável da TradingSession.
 
-    Todos os campos são opcionais para permitir "fresh start" (primeira
-    execução) sem exigir dados.
+    F5e: +5 campos (persistência de parciais/reforço entre reinícios).
     """
     last_sl_time: datetime | None = None
     trades_today: int = 0
     current_day: datetime | None = None
     current_entry_region: datetime | None = None
     current_entry_position: int | None = None
+    # F5e: persistência de parciais/reforço
+    current_entry_price: float | None = None
+    current_is_buy: bool | None = None
+    reentry_armed: bool = False
+    reentry_done: bool = False
+    partials_filled: tuple[int, ...] = ()
 
 
 class StateStore(Protocol):

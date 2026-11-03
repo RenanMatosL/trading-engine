@@ -126,16 +126,8 @@ class FakeGateway:
         ticket = self._next_ticket
         self._next_ticket += 1
 
-        # Stop (BuyStop/SellStop): registra como ordem pendente, NÃO abre posição.
-        # Detecta pelo comment conter "sl" ou "stop" (o RealExecutor usa
-        # "engine_reentry_sl" para o SL do reforço).
-        c = (req.comment or "").lower()
-        is_stop = (
-            not req.is_limit
-            and ("stop" in c or "sl" in c)
-        )
-
-        if req.is_limit or is_stop:
+        # F5e: `is_stop` vem explícito no OrderRequest (não mais por string).
+        if req.is_limit or req.is_stop:
             order = _PendingOrder(
                 ticket=ticket, symbol=req.symbol, is_buy=req.is_buy,
                 is_limit=req.is_limit,

@@ -106,9 +106,22 @@ class SimulatedExecutor:
       - _balance: equity acumulado
     """
 
-    def __init__(self, preset: StdDevV510Preset, initial_balance: float = 100_000.0):
+    def __init__(
+        self,
+        preset: StdDevV510Preset,
+        initial_balance: float = 100_000.0,
+        *,
+        slippage_points: float = 0.0,
+        spread_points: float = 0.0,
+    ):
+        if slippage_points < 0:
+            raise ValueError("slippage_points deve ser >= 0")
+        if spread_points < 0:
+            raise ValueError("spread_points deve ser >= 0")
         self._preset = preset
         self._balance = initial_balance
+        self._slippage = slippage_points
+        self._spread = spread_points
         self._open: _OpenTrade | None = None
         self._pending_limit: TradeIntent | None = None
         self._closed: list[SimulatedTrade] = []
@@ -151,23 +164,30 @@ class SimulatedExecutor:
             self._fill_market(intent, snapshot)
 
     def _fill_market(self, intent: TradeIntent, snapshot: MarketSnapshot) -> None:
-        """Fill imediato no entry_price."""
+        """Fill imediato no entry_price (ajustado por slippage)."""
         # Sanity: SL/TP coerentes com is_buy
         if intent.is_buy:
             if intent.stop_loss >= intent.entry_price:
-                return  # SL inválido
+                return
             if intent.take_profit > 0 and intent.take_profit <= intent.entry_price:
-                return  # TP inválido
+                return
         else:
             if intent.stop_loss <= intent.entry_price:
                 return
             if intent.take_profit > 0 and intent.take_profit >= intent.entry_price:
                 return
 
-        self._open = _OpenTrade(intent, snapshot.now, intent.entry_price)
+        # F5e: slippage (pior caso — compra paga mais, venda recebe menos)
+        if intent.is_buy:
+            fill_price = intent.entry_price + self._slippage
+        else:
+            fill_price = intent.entry_price - self._slippage
+
+        self._open = _OpenTrade(intent, snapshot.now, fill_price)
         log.info("sim_trade_opened", is_buy=intent.is_buy,
-                 entry=intent.entry_price, sl=intent.stop_loss,
-                 tp=intent.take_profit, volume=intent.volume)
+                 entry=fill_price, sl=intent.stop_loss,
+                 tp=intent.take_profit, volume=intent.volume,
+                 slippage=self._slippage)
 
     # ----------------------------------------------------------------
     # Checagem de fills e stops a cada tick
@@ -191,8 +211,12 @@ class SimulatedExecutor:
                 self._pending_limit = None
                 self._fill_market(intent, snapshot)
                 # Ajusta o entry_price do trade para o fill real
+                # (F5e: aplica slippage no fill de limite também — pior caso)
                 if self._open is not None:
-                    self._open.entry_price = fill_price
+                    if intent.is_buy:
+                        self._open.entry_price = fill_price + self._slippage
+                    else:
+                        self._open.entry_price = fill_price - self._slippage
             return  # não checa SL/TP no mesmo tick do fill
 
         # 2. Trade aberto? Checa SL/TP (SL ganha empate)

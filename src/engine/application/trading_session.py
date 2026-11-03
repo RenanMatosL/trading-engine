@@ -101,9 +101,15 @@ class TradingSession:
         region_manager: RegionManager | None = None,
         pricing_config: PricingConfig | None = None,
         state_store: StateStore | None = None,
+        calendar: "B3Calendar | None" = None,
     ) -> None:
         self._preset = preset
         self._pricing = pricing_config or _preset_to_pricing(preset)
+
+        # F5e: calendar B3 (default = B3Calendar() em produção)
+        if calendar is None:
+            from engine.domain.risk.exchange_calendar import B3Calendar
+            calendar = B3Calendar()
 
         if region_manager is None:
             region_manager = RegionManager(
@@ -111,6 +117,7 @@ class TradingSession:
                 valid_days=preset.regions.valid_days,
                 breakout_ttl_min=preset.session.breakout_ttl_min,
                 candidate_mode=_preset_to_candidate_mode(preset),
+                calendar=calendar,
             )
         self._regions = region_manager
 
@@ -197,13 +204,19 @@ class TradingSession:
         if self._store is None:
             return
         snap = self._store.load_session()
+        snap = self._store.load_session()
         if snap is not None:
             self._last_sl_time = snap.last_sl_time
             self._trades_today = snap.trades_today
             self._current_day = snap.current_day
             self._current_entry_region = snap.current_entry_region
             self._current_entry_position = snap.current_entry_position
-
+            # F5e
+            self._current_entry_price = snap.current_entry_price
+            self._current_is_buy = snap.current_is_buy
+            self._reentry_armed = snap.reentry_armed
+            self._reentry_done = snap.reentry_done
+            self._partials_filled = list(snap.partials_filled)
         stored_regions = self._store.load_regions()
         if stored_regions:
             for region in stored_regions:
@@ -232,6 +245,12 @@ class TradingSession:
             current_day=self._current_day,
             current_entry_region=self._current_entry_region,
             current_entry_position=self._current_entry_position,
+            # F5e
+            current_entry_price=self._current_entry_price,
+            current_is_buy=self._current_is_buy,
+            reentry_armed=self._reentry_armed,
+            reentry_done=self._reentry_done,
+            partials_filled=tuple(self._partials_filled),
         )
 
     # ----------------------------------------------------------------

@@ -290,3 +290,35 @@ def test_by_risk_ignora_total_contracts():
 
     assert result.is_ok
     assert result.volume == 2.0
+
+
+
+#+------------------------------------------------------------------+
+#| F5e — OrderRequest.is_stop                                      |
+#+------------------------------------------------------------------+
+def test_order_request_is_stop_default_false():
+    """OrderRequest padrão: is_stop=False (market/limit)."""
+    from engine.infrastructure.mt5.gateway import OrderRequest
+    req = OrderRequest(
+        symbol="WIN$N", is_buy=True, volume=1.0, price=1000.0,
+        is_limit=False,
+    )
+    assert req.is_stop is False
+
+
+def test_fake_gateway_is_stop_registra_ordem_nao_posicao():
+    """is_stop=True → ordem pendente (não abre posição)."""
+    from engine.infrastructure.mt5.fake import FakeGateway
+    from engine.infrastructure.mt5.gateway import OrderRequest
+
+    gw = FakeGateway()
+    gw.connect()
+    req = OrderRequest(
+        symbol="WIN$N", is_buy=False, volume=1.0, price=900.0,
+        is_limit=False, is_stop=True, comment="test_stop",
+    )
+    res = gw.place_order(req)
+
+    assert res.is_ok
+    assert len(gw.orders("WIN$N")) == 1
+    assert len(gw.positions("WIN$N")) == 0

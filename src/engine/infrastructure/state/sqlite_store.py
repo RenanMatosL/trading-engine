@@ -80,6 +80,12 @@ class SqliteStateStore:
             "current_day": _dt_to_iso(snapshot.current_day),
             "current_entry_region": _dt_to_iso(snapshot.current_entry_region),
             "current_entry_position": snapshot.current_entry_position,
+            # F5e
+            "current_entry_price": snapshot.current_entry_price,
+            "current_is_buy": snapshot.current_is_buy,
+            "reentry_armed": snapshot.reentry_armed,
+            "reentry_done": snapshot.reentry_done,
+            "partials_filled": list(snapshot.partials_filled),
         }
         now = datetime.now(tz=timezone.utc).isoformat()
         self._conn.execute(
@@ -102,6 +108,12 @@ class SqliteStateStore:
             current_day=_iso_to_dt(payload.get("current_day")),
             current_entry_region=_iso_to_dt(payload.get("current_entry_region")),
             current_entry_position=payload.get("current_entry_position"),
+            # F5e
+            current_entry_price=payload.get("current_entry_price"),
+            current_is_buy=payload.get("current_is_buy"),
+            reentry_armed=bool(payload.get("reentry_armed", False)),
+            reentry_done=bool(payload.get("reentry_done", False)),
+            partials_filled=tuple(payload.get("partials_filled", [])),
         )
 
     # ----------------------------------------------------------------

@@ -196,3 +196,108 @@ def test_event_feed_fora_de_ordem_rejeitado():
             BarEvent(bar=bar, zscore=5.0),
             TickEvent(_snap(1000, 999, T0 + 5 * TICK)),  # antes da barra
         ])
+
+
+
+#+------------------------------------------------------------------+
+#| F5e — Slippage/spread                                          |
+#+------------------------------------------------------------------+
+def test_slippage_afeta_fill_de_mercado():
+    """Compra a mercado com slippage=2 preenche em entry+2."""
+    from engine.application.simulation import SimulatedExecutor
+    from engine.application.trading_session import TradingSession
+    from engine.application.intent import TradeIntent
+    from engine.domain.strategy.location import RegionState, TradeLocation
+
+    preset = _preset()
+    executor = SimulatedExecutor(preset, slippage_points=2.0)
+
+    loc = TradeLocation(
+        bar_time=T0, high=1200.0, low=1000.0, volume=5000.0, big_candle=False,
+    )
+    region = RegionState(location=loc)
+    region.phase = region.phase.BROKEN
+    region.is_buy = True
+    region.stop_loss = 800.0
+    region.take_profit = 1700.0
+
+    intent = TradeIntent(
+        region=region, is_buy=True, entry_price=1100.0,
+        stop_loss=800.0, take_profit=1700.0, volume=6.0,
+        as_pending=False, reason="test", created_at=T0,
+    )
+
+    # Simula um tick com preço favorável
+    snapshot = MarketSnapshot(ask=1100.0, bid=1099.0, now=T0 + TICK)
+    executor.execute(intent, snapshot)
+
+    # O fill deve ser entry + slippage = 1102
+    assert executor.open_trade is not None
+    assert executor.open_trade.entry_price == 1102.0
+
+
+def test_slippage_afeta_fill_de_limite():
+    """Compra limite com slippage=2 preenche em entry+2 (pior caso)."""
+    from engine.application.simulation import SimulatedExecutor
+    from engine.application.intent import TradeIntent
+    from engine.domain.strategy.location import RegionState, TradeLocation
+
+    preset = _preset()
+    executor = SimulatedExecutor(preset, slippage_points=2.0)
+
+    loc = TradeLocation(
+        bar_time=T0, high=1200.0, low=1000.0, volume=5000.0, big_candle=False,
+    )
+    region = RegionState(location=loc)
+    region.phase = region.phase.BROKEN
+    region.is_buy = True
+    region.stop_loss = 800.0
+    region.take_profit = 1700.0
+
+    intent = TradeIntent(
+        region=region, is_buy=True, entry_price=1100.0,
+        stop_loss=800.0, take_profit=1700.0, volume=6.0,
+        as_pending=True, reason="test", created_at=T0,
+    )
+
+    # 1. Executa (arma limite)
+    snapshot1 = MarketSnapshot(ask=1105.0, bid=1104.0, now=T0 + TICK)
+    executor.execute(intent, snapshot1)
+    assert executor.pending_limit is not None
+
+    # 2. Preço volta ao entry → fill com slippage
+    snapshot2 = MarketSnapshot(ask=1100.0, bid=1099.0, now=T0 + 2 * TICK)
+    executor.on_tick(snapshot2)
+    assert executor.open_trade is not None
+    assert executor.open_trade.entry_price == 1102.0  # entry + slippage
+
+
+def test_slippage_zero_nao_altera_fill():
+    """slippage=0 (default) → fill em entry_price (comportamento antigo)."""
+    from engine.application.simulation import SimulatedExecutor
+    from engine.application.intent import TradeIntent
+    from engine.domain.strategy.location import RegionState, TradeLocation
+
+    preset = _preset()
+    executor = SimulatedExecutor(preset)  # slippage=0 default
+
+    loc = TradeLocation(
+        bar_time=T0, high=1200.0, low=1000.0, volume=5000.0, big_candle=False,
+    )
+    region = RegionState(location=loc)
+    region.phase = region.phase.BROKEN
+    region.is_buy = True
+    region.stop_loss = 800.0
+    region.take_profit = 1700.0
+
+    intent = TradeIntent(
+        region=region, is_buy=True, entry_price=1100.0,
+        stop_loss=800.0, take_profit=1700.0, volume=6.0,
+        as_pending=False, reason="test", created_at=T0,
+    )
+
+    snapshot = MarketSnapshot(ask=1100.0, bid=1099.0, now=T0 + TICK)
+    executor.execute(intent, snapshot)
+
+    assert executor.open_trade is not None
+    assert executor.open_trade.entry_price == 1100.0  # sem slippage

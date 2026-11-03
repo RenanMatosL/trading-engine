@@ -255,3 +255,62 @@ def test_session_sem_store_nao_quebra():
     sess = TradingSession(preset)  # sem state_store
     sess.save_state()              # no-op
     assert sess.trades_today == 0
+
+
+
+#+------------------------------------------------------------------+
+#| F5e — Persistência de parciais/reforço                         |
+#+------------------------------------------------------------------+
+def test_session_snapshot_persiste_parciais_reforco():
+    """Salva snapshot com todos os campos F5e e recarrega."""
+    from datetime import datetime, timezone
+    from engine.domain.state.store import SessionSnapshot
+    from engine.infrastructure.state.memory_store import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    snap = SessionSnapshot(
+        last_sl_time=datetime(2026, 10, 29, 10, 0, tzinfo=timezone.utc),
+        trades_today=2,
+        current_day=datetime(2026, 10, 29, tzinfo=timezone.utc),
+        current_entry_region=datetime(2026, 10, 29, 9, 10, tzinfo=timezone.utc),
+        current_entry_position=12345,
+        # F5e
+        current_entry_price=1100.0,
+        current_is_buy=True,
+        reentry_armed=True,
+        reentry_done=False,
+        partials_filled=(0, 1),
+    )
+    store.save_session(snap)
+
+    loaded = store.load_session()
+    assert loaded is not None
+    assert loaded.current_entry_price == 1100.0
+    assert loaded.current_is_buy is True
+    assert loaded.reentry_armed is True
+    assert loaded.reentry_done is False
+    assert loaded.partials_filled == (0, 1)
+
+
+def test_trading_session_calendar_default_b3():
+    """TradingSession sem calendar explícito → usa B3Calendar() por default."""
+    from engine.application.trading_session import TradingSession
+    from engine.domain.risk.exchange_calendar import B3Calendar
+    from engine.config.presets import (
+        DetectorParams, SessionParams, StdDevV510Preset, TimeWindowParams,
+    )
+    from datetime import time
+
+    preset = StdDevV510Preset.model_validate({
+        "name": "test", "strategy": "stddev_v510",
+        "detector": DetectorParams(mute_open_min=0).model_dump(),
+        "session": SessionParams(
+            use_entry_block=False,
+            window=TimeWindowParams(start=time(9, 0), end=time(17, 30)),
+        ).model_dump(),
+    })
+    sess = TradingSession(preset)
+    # O RegionManager deve ter o B3Calendar por default
+    # (verificamos indiretamente pela validade por pregões)
+    assert sess.regions._calendar is not None
+    assert isinstance(sess.regions._calendar, B3Calendar)

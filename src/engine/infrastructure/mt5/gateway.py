@@ -103,6 +103,7 @@ class OrderRequest:
     stop_loss: float = 0.0
     take_profit: float = 0.0
     is_limit: bool = True
+    is_stop: bool = False          # F5e: stop (BuyStop/SellStop)
     comment: str = ""
     magic: int = 0
 
@@ -251,7 +252,12 @@ class RealMT5Gateway:
     # --- Execução ---
     def place_order(self, req: OrderRequest) -> OrderResult:
         mt5 = self._mt5
-        if req.is_limit:
+        if req.is_stop:
+            order_type = (
+                mt5.ORDER_TYPE_BUY_STOP if req.is_buy else mt5.ORDER_TYPE_SELL_STOP
+            )
+            action = mt5.TRADE_ACTION_PENDING
+        elif req.is_limit:
             order_type = (
                 mt5.ORDER_TYPE_BUY_LIMIT if req.is_buy else mt5.ORDER_TYPE_SELL_LIMIT
             )
