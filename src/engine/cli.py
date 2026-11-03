@@ -31,6 +31,8 @@ from engine.infrastructure.mt5.gateway import (
 from engine.infrastructure.state.sqlite_store import SqliteStateStore
 from engine.application.intent import ReentryIntent
 from engine.application.trade_events import ReentryFilled
+from engine.application.registry import StrategyRegistry
+from engine.domain.strategy.strategy import StrategyConfig
 
 log = structlog.get_logger()
 
@@ -90,13 +92,45 @@ def cmd_check_config(args: argparse.Namespace, settings: EngineSettings) -> int:
 def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
     """Loop principal — conecta, processa ticks, decide, executa.
 
-    F5a: após executar um TradeIntent com parciais, arma as ordens limite.
-    F5c: após `reentry_intent`, arma a ordem limite do reforço. No fill,
-         arma TP/SL do reforço.
+    F5f: suporta N estratégias em paralelo (cada uma com seu `TradingSession`,
+    `RealExecutor`, `TradeEventPoller`, `VolumeStdDetector` e `magic`).
+
+    Flags:
+      --strategies=A,B: nomes das estratégias (default: todas do registry)
+      --dry-run: usa FakeGateway
+      --fast: não dorme entre iterações
+      --max-ticks N: para após N iterações
+      --db PATH: SQLite (default: engine.db)
     """
+    # ------------------------------------------------------------------
+    # 1. Resolver estratégias
+    # ------------------------------------------------------------------
     preset = load_preset(args.preset or settings.preset)
+    base_name = preset.strategy  # "stddev_v510" (tipo), não "v510_default" (nome)
+
+    registry = StrategyRegistry()
+    registry.register(StrategyConfig(
+        name=base_name,
+        preset=preset,
+        magic=0,
+    ))
+
+    names_arg = getattr(args, "strategies", None)
+    names: list[str] | None = None
+    if names_arg:
+        names = [n.strip() for n in names_arg.split(",") if n.strip()]
+
+    try:
+        configs = registry.resolve(names)
+    except (KeyError, ValueError) as exc:
+        log.error("strategy_resolve_falhou", erro=str(exc))
+        return 2
+
     symbol = settings.mt5.symbol
 
+    # ------------------------------------------------------------------
+    # 2. Criar gateway
+    # ------------------------------------------------------------------
     gw: BrokerGateway
     if args.dry_run:
         gw = FakeGateway()
@@ -109,32 +143,62 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
         log.error("mt5_indisponivel", detalhe=str(exc))
         return 2
 
-    store = SqliteStateStore(args.db or "engine.db")
-    session = TradingSession(preset, state_store=store)
-    executor = RealExecutor(gw, preset)
-    poller = TradeEventPoller()
-    detector = VolumeStdDetector(
-        length=preset.detector.length,
-        std_ref=preset.detector.std_ref,
-        source=preset.detector.volume_source,
-    )
+    # ------------------------------------------------------------------
+    # 3. Criar N sessões (uma por estratégia)
+    # ------------------------------------------------------------------
+    from engine.domain.risk.exchange_calendar import B3Calendar
+    calendar = B3Calendar()
+
+    sessions: list[dict] = []
+    for cfg in configs:
+        store = SqliteStateStore(args.db or "engine.db")
+        session = TradingSession(
+            cfg.preset,
+            state_store=store,
+            calendar=calendar,
+        )
+        executor = RealExecutor(gw, cfg.preset)
+        poller = TradeEventPoller()
+        detector = VolumeStdDetector(
+            length=cfg.preset.detector.length,
+            std_ref=cfg.preset.detector.std_ref,
+            source=cfg.preset.detector.volume_source,
+        )
+        sessions.append({
+            "config": cfg,
+            "store": store,
+            "session": session,
+            "executor": executor,
+            "poller": poller,
+            "detector": detector,
+            "magic": cfg.magic,
+            "last_bar_time": None,
+            "last_poll_time": datetime.now(tz=timezone.utc) - timedelta(minutes=5),
+            "pending_reentry": None,
+            "breakeven_applied": False,
+        })
+        log.info(
+            "strategy_session_created",
+            name=cfg.name, magic=cfg.magic,
+            preset=cfg.preset.name,
+        )
 
     sleep_s = 0.0 if args.fast else (args.poll_interval or 1.0)
     max_ticks = args.max_ticks or 0
-    last_bar_time: datetime | None = None
-    last_poll_time = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
     ticks = 0
-    end_of_day_done_today: datetime | None = None
-    breakeven_applied_for_trade: bool = False
+    end_of_day_done_today: dict[str, datetime] = {}
 
-    # F5c: guarda o `reentry_intent` para o fill (o poller é assíncrono
-    # em relação ao tick que armou)
-    pending_reentry: ReentryIntent | None = None
+    log.info(
+        "engine_run_start",
+        symbol=symbol, dry_run=args.dry_run,
+        n_strategies=len(sessions),
+        strategies=[s["config"].name for s in sessions],
+        max_ticks=max_ticks, poll_interval=sleep_s,
+    )
 
-    log.info("engine_run_start",
-             symbol=symbol, dry_run=args.dry_run, preset=preset.name,
-             max_ticks=max_ticks, poll_interval=sleep_s)
-
+    # ------------------------------------------------------------------
+    # 4. Loop principal
+    # ------------------------------------------------------------------
     try:
         while True:
             ticks += 1
@@ -142,6 +206,7 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
                 log.info("engine_run_max_ticks", ticks=ticks)
                 break
 
+            # Preço corrente (1 leitura por tick, compartilhada)
             try:
                 tick = gw.symbol_info_tick(symbol)
             except Exception as exc:  # noqa: BLE001
@@ -153,131 +218,23 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
             now = tick.time
             snapshot = MarketSnapshot(ask=tick.ask, bid=tick.bid, now=now)
 
+            # Bars fechadas (1 leitura por tick, compartilhada)
             try:
                 bars = gw.closed_bars(symbol, preset.detector.timeframe, 1)
             except Exception as exc:  # noqa: BLE001
                 log.warning("bars_falhou", erro=str(exc))
                 bars = []
 
-            if bars:
-                last = bars[0]
-                if last_bar_time is None or last.time > last_bar_time:
-                    last_bar_time = last.time
-                    reading = detector.on_bar_closed(last)
-                    if reading is not None:
-                        session.on_bar_closed(last, reading.zscore, now)
-
-            decision = session.on_tick(snapshot)
-
-            # --- Entrada principal ---
-            if decision.intent is not None:
-                result = executor.execute(decision.intent, symbol=symbol)
-                if result.is_ok:
-                    session.notify_trade_opened(
-                        now=snapshot.now,
-                        region_bar_time=decision.intent.bar_time,
-                        entry_price=decision.intent.entry_price,
-                        is_buy=decision.intent.is_buy,
-                    )
-                    breakeven_applied_for_trade = False
-                    if decision.intent.partials:
-                        executor.place_partial_orders(
-                            decision.intent, symbol=symbol,
-                        )
-
-            # --- F5c: reforço ---
-            # Quando o TradingSession sinaliza (preço voltou ao entry),
-            # arma a ordem limite do reforço. Guarda o `pending_reentry`
-            # para armar TP/SL no fill.
-            if decision.reentry_intent is not None:
-                ri = decision.reentry_intent
-                reentry_res = executor.place_reentry_order(
+            # Para cada estratégia, processa o mesmo tick
+            for st in sessions:
+                _process_strategy_tick(
+                    st=st,
+                    gw=gw,
                     symbol=symbol,
-                    price=ri.entry_price,
-                    is_buy=ri.is_buy,
-                    contracts=ri.contracts,
+                    snapshot=snapshot,
+                    bars=bars,
+                    end_of_day_done_today=end_of_day_done_today,
                 )
-                if reentry_res.is_ok:
-                    pending_reentry = ri
-                    log.info(
-                        "engine_reentry_order",
-                        price=ri.entry_price, is_buy=ri.is_buy,
-                        contracts=ri.contracts,
-                        ticket=reentry_res.order_ticket,
-                    )
-
-            # --- Poller ---
-            try:
-                events = poller.poll(
-                    gw, since=last_poll_time, symbol=symbol, magic=0,
-                )
-                last_poll_time = now
-            except Exception as exc:  # noqa: BLE001
-                log.warning("poller_falhou", erro=str(exc))
-                events = []
-
-            for ev in events:
-                session.on_trade_event(ev, now=now)
-
-                # --- F5c: reforço preenchido → arma TP/SL ---
-                if isinstance(ev, ReentryFilled) and pending_reentry is not None:
-                    ri = pending_reentry
-                    executor.place_reentry_exits(
-                        symbol=symbol,
-                        entry_price=ri.entry_price,
-                        is_buy=ri.is_buy,
-                        contracts=ri.contracts,
-                        tp_points=ri.tp_points,
-                        sl_points=ri.sl_points,
-                    )
-                    pending_reentry = None
-
-                # --- F5a: breakeven após Tier 1 ---
-                if (isinstance(ev, PartialFilled)
-                        and preset.risk.breakeven_after_partial
-                        and not breakeven_applied_for_trade):
-                    tier = session._infer_tier_from_comment(ev.deal.comment)
-                    if tier == 0 and session.current_entry_position is not None:
-                        pos = session.current_entry_position
-                        positions = gw.positions(symbol)
-                        current_tp = 0.0
-                        for p in positions:
-                            if p.ticket == pos:
-                                current_tp = p.take_profit
-                                break
-                        be_price = session.current_entry_price or 0.0
-                        if be_price > 0:
-                            modify = executor.modify(
-                                pos, stop_loss=be_price,
-                                take_profit=current_tp,
-                            )
-                            if modify.is_ok:
-                                breakeven_applied_for_trade = True
-                                log.info(
-                                    "breakeven_applied",
-                                    position=pos, price=be_price,
-                                )
-
-            # --- Fim do dia ---
-            if preset.session.close_outside:
-                cur_time = now.time()
-                sess_window = preset.session.window
-                in_window = (
-                    sess_window.start <= cur_time < sess_window.end
-                    if sess_window.start < sess_window.end
-                    else cur_time >= sess_window.start or cur_time < sess_window.end
-                )
-                if not in_window:
-                    today = now.date()
-                    if end_of_day_done_today is None or end_of_day_done_today.date() != today:
-                        end_of_day_done_today = now
-                        results = executor.close_all_at_end_of_day(symbol, now)
-                        for r in results:
-                            if r.is_ok:
-                                session.notify_position_closed(now)
-                        log.info("end_of_day_closed", n=len(results))
-
-            session.save_state()
 
             if sleep_s > 0:
                 time.sleep(sleep_s)
@@ -285,14 +242,161 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
     except KeyboardInterrupt:
         log.info("engine_run_interrupted")
     finally:
-        try:
-            session.save_state()
-        except Exception:  # noqa: BLE001
-            pass
-        store.close()
+        for st in sessions:
+            try:
+                st["session"].save_state()
+            except Exception:  # noqa: BLE001
+                pass
+            st["store"].close()
         gw.shutdown()
 
     return 0
+
+
+#+------------------------------------------------------------------+
+#| F5f: processa 1 tick para 1 estratégia                          |
+#+------------------------------------------------------------------+
+def _process_strategy_tick(
+    *,
+    st: dict,
+    gw: BrokerGateway,
+    symbol: str,
+    snapshot: MarketSnapshot,
+    bars: list,
+    end_of_day_done_today: dict[str, datetime],
+) -> None:
+    """Processa 1 tick para 1 estratégia (extraído do `cmd_run` para clareza)."""
+    cfg = st["config"]
+    session = st["session"]
+    executor = st["executor"]
+    poller = st["poller"]
+    detector = st["detector"]
+    magic = st["magic"]
+    now = snapshot.now
+
+    # 1. Novo candle fechado?
+    if bars:
+        last = bars[0]
+        if st["last_bar_time"] is None or last.time > st["last_bar_time"]:
+            st["last_bar_time"] = last.time
+            reading = detector.on_bar_closed(last)
+            if reading is not None:
+                session.on_bar_closed(last, reading.zscore, now)
+
+    # 2. on_tick → TradeIntent
+    decision = session.on_tick(snapshot)
+
+    if decision.intent is not None:
+        result = executor.execute(decision.intent, symbol=symbol)
+        if result.is_ok:
+            session.notify_trade_opened(
+                now=snapshot.now,
+                region_bar_time=decision.intent.bar_time,
+                entry_price=decision.intent.entry_price,
+                is_buy=decision.intent.is_buy,
+            )
+            st["breakeven_applied"] = False
+            if decision.intent.partials:
+                executor.place_partial_orders(
+                    decision.intent, symbol=symbol,
+                )
+
+    # 3. F5c: reforço
+    if decision.reentry_intent is not None:
+        ri = decision.reentry_intent
+        reentry_res = executor.place_reentry_order(
+            symbol=symbol,
+            price=ri.entry_price,
+            is_buy=ri.is_buy,
+            contracts=ri.contracts,
+        )
+        if reentry_res.is_ok:
+            st["pending_reentry"] = ri
+            log.info(
+                "engine_reentry_order",
+                strategy=cfg.name,
+                price=ri.entry_price, is_buy=ri.is_buy,
+                contracts=ri.contracts,
+                ticket=reentry_res.order_ticket,
+            )
+
+    # 4. Poller
+    try:
+        events = poller.poll(
+            gw, since=st["last_poll_time"], symbol=symbol, magic=magic,
+        )
+        st["last_poll_time"] = now
+    except Exception as exc:  # noqa: BLE001
+        log.warning("poller_falhou", strategy=cfg.name, erro=str(exc))
+        events = []
+
+    for ev in events:
+        session.on_trade_event(ev, now=now)
+
+        # F5c: reforço preenchido → arma TP/SL
+        if isinstance(ev, ReentryFilled) and st["pending_reentry"] is not None:
+            ri = st["pending_reentry"]
+            executor.place_reentry_exits(
+                symbol=symbol,
+                entry_price=ri.entry_price,
+                is_buy=ri.is_buy,
+                contracts=ri.contracts,
+                tp_points=ri.tp_points,
+                sl_points=ri.sl_points,
+            )
+            st["pending_reentry"] = None
+
+        # F5a: breakeven após Tier 1
+        if (isinstance(ev, PartialFilled)
+                and cfg.preset.risk.breakeven_after_partial
+                and not st["breakeven_applied"]):
+            tier = session._infer_tier_from_comment(ev.deal.comment)
+            if tier == 0 and session.current_entry_position is not None:
+                pos = session.current_entry_position
+                positions = gw.positions(symbol)
+                current_tp = 0.0
+                for p in positions:
+                    if p.ticket == pos:
+                        current_tp = p.take_profit
+                        break
+                be_price = session.current_entry_price or 0.0
+                if be_price > 0:
+                    modify = executor.modify(
+                        pos, stop_loss=be_price, take_profit=current_tp,
+                    )
+                    if modify.is_ok:
+                        st["breakeven_applied"] = True
+                        log.info(
+                            "breakeven_applied",
+                            strategy=cfg.name,
+                            position=pos, price=be_price,
+                        )
+
+    # 5. Fim do dia
+    if cfg.preset.session.close_outside:
+        cur_time = now.time()
+        sess_window = cfg.preset.session.window
+        in_window = (
+            sess_window.start <= cur_time < sess_window.end
+            if sess_window.start < sess_window.end
+            else cur_time >= sess_window.start or cur_time < sess_window.end
+        )
+        if not in_window:
+            today = now.date()
+            last = end_of_day_done_today.get(cfg.name)
+            if last is None or last.date() != today:
+                end_of_day_done_today[cfg.name] = now
+                results = executor.close_all_at_end_of_day(symbol, now)
+                for r in results:
+                    if r.is_ok:
+                        session.notify_position_closed(now)
+                log.info(
+                    "end_of_day_closed",
+                    strategy=cfg.name, n=len(results),
+                )
+
+    # 6. Persiste
+    session.save_state()
 
 
 def cmd_shadow(args: argparse.Namespace, settings: EngineSettings) -> int:
@@ -435,6 +539,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--poll-interval", type=float, default=1.0)
     p_run.add_argument("--max-ticks", type=int, default=0)
     p_run.add_argument("--fast", action="store_true")
+    p_run.add_argument("--strategies", default=None,
+                       help="Estratégias separadas por vírgula (default: todas)")
 
     p_shadow = sub.add_parser("shadow", help="Modo sombra: compara decisões com EA")
     p_shadow.add_argument("--ea-magic", type=int, required=True)
