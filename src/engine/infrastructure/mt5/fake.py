@@ -126,17 +126,29 @@ class FakeGateway:
         ticket = self._next_ticket
         self._next_ticket += 1
 
-        if req.is_limit:
+        # Stop (BuyStop/SellStop): registra como ordem pendente, NÃO abre posição.
+        # Detecta pelo comment conter "sl" ou "stop" (o RealExecutor usa
+        # "engine_reentry_sl" para o SL do reforço).
+        c = (req.comment or "").lower()
+        is_stop = (
+            not req.is_limit
+            and ("stop" in c or "sl" in c)
+        )
+
+        if req.is_limit or is_stop:
             order = _PendingOrder(
                 ticket=ticket, symbol=req.symbol, is_buy=req.is_buy,
-                is_limit=True, volume=req.volume, price=req.price,
+                is_limit=req.is_limit,
+                volume=req.volume, price=req.price,
                 stop_loss=req.stop_loss, take_profit=req.take_profit,
                 magic=req.magic, comment=req.comment,
                 time=datetime.now(tz=timezone.utc),
             )
             self._orders[ticket] = order
-            return OrderResult(RETCODE_DONE, ticket, 0, "limit accepted")
+            kind = "limit" if req.is_limit else "stop"
+            return OrderResult(RETCODE_DONE, ticket, 0, f"{kind} accepted")
 
+        # Market: abre posição
         pos = _OpenPosition(
             ticket=ticket, symbol=req.symbol, is_buy=req.is_buy,
             volume=req.volume, price_open=req.price,

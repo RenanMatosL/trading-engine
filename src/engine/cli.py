@@ -29,6 +29,8 @@ from engine.infrastructure.mt5.gateway import (
     RealMT5Gateway,
 )
 from engine.infrastructure.state.sqlite_store import SqliteStateStore
+from engine.application.intent import ReentryIntent
+from engine.application.trade_events import ReentryFilled
 
 log = structlog.get_logger()
 
@@ -89,7 +91,8 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
     """Loop principal — conecta, processa ticks, decide, executa.
 
     F5a: após executar um TradeIntent com parciais, arma as ordens limite.
-    Após um PartialFilled de Tier 1, move SL para breakeven (se configurado).
+    F5c: após `reentry_intent`, arma a ordem limite do reforço. No fill,
+         arma TP/SL do reforço.
     """
     preset = load_preset(args.preset or settings.preset)
     symbol = settings.mt5.symbol
@@ -122,7 +125,11 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
     last_poll_time = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
     ticks = 0
     end_of_day_done_today: datetime | None = None
-    breakeven_applied_for_trade: bool = False  # F5a: 1x por trade
+    breakeven_applied_for_trade: bool = False
+
+    # F5c: guarda o `reentry_intent` para o fill (o poller é assíncrono
+    # em relação ao tick que armou)
+    pending_reentry: ReentryIntent | None = None
 
     log.info("engine_run_start",
              symbol=symbol, dry_run=args.dry_run, preset=preset.name,
@@ -161,20 +168,45 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
                         session.on_bar_closed(last, reading.zscore, now)
 
             decision = session.on_tick(snapshot)
+
+            # --- Entrada principal ---
             if decision.intent is not None:
                 result = executor.execute(decision.intent, symbol=symbol)
                 if result.is_ok:
                     session.notify_trade_opened(
                         now=snapshot.now,
                         region_bar_time=decision.intent.bar_time,
+                        entry_price=decision.intent.entry_price,
+                        is_buy=decision.intent.is_buy,
                     )
                     breakeven_applied_for_trade = False
-                    # F5a: arma as parciais (se houver)
                     if decision.intent.partials:
                         executor.place_partial_orders(
                             decision.intent, symbol=symbol,
                         )
 
+            # --- F5c: reforço ---
+            # Quando o TradingSession sinaliza (preço voltou ao entry),
+            # arma a ordem limite do reforço. Guarda o `pending_reentry`
+            # para armar TP/SL no fill.
+            if decision.reentry_intent is not None:
+                ri = decision.reentry_intent
+                reentry_res = executor.place_reentry_order(
+                    symbol=symbol,
+                    price=ri.entry_price,
+                    is_buy=ri.is_buy,
+                    contracts=ri.contracts,
+                )
+                if reentry_res.is_ok:
+                    pending_reentry = ri
+                    log.info(
+                        "engine_reentry_order",
+                        price=ri.entry_price, is_buy=ri.is_buy,
+                        contracts=ri.contracts,
+                        ticket=reentry_res.order_ticket,
+                    )
+
+            # --- Poller ---
             try:
                 events = poller.poll(
                     gw, since=last_poll_time, symbol=symbol, magic=0,
@@ -187,24 +219,33 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
             for ev in events:
                 session.on_trade_event(ev, now=now)
 
-                # F5a: breakeven após Tier 1 (1x por trade)
+                # --- F5c: reforço preenchido → arma TP/SL ---
+                if isinstance(ev, ReentryFilled) and pending_reentry is not None:
+                    ri = pending_reentry
+                    executor.place_reentry_exits(
+                        symbol=symbol,
+                        entry_price=ri.entry_price,
+                        is_buy=ri.is_buy,
+                        contracts=ri.contracts,
+                        tp_points=ri.tp_points,
+                        sl_points=ri.sl_points,
+                    )
+                    pending_reentry = None
+
+                # --- F5a: breakeven após Tier 1 ---
                 if (isinstance(ev, PartialFilled)
                         and preset.risk.breakeven_after_partial
                         and not breakeven_applied_for_trade):
                     tier = session._infer_tier_from_comment(ev.deal.comment)
                     if tier == 0 and session.current_entry_position is not None:
                         pos = session.current_entry_position
-                        # Move SL para entry; mantém TP atual
                         positions = gw.positions(symbol)
                         current_tp = 0.0
                         for p in positions:
                             if p.ticket == pos:
                                 current_tp = p.take_profit
                                 break
-                        be_price = (
-                            decision.intent.entry_price
-                            if decision.intent is not None else 0.0
-                        )
+                        be_price = session.current_entry_price or 0.0
                         if be_price > 0:
                             modify = executor.modify(
                                 pos, stop_loss=be_price,
@@ -217,6 +258,7 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
                                     position=pos, price=be_price,
                                 )
 
+            # --- Fim do dia ---
             if preset.session.close_outside:
                 cur_time = now.time()
                 sess_window = preset.session.window

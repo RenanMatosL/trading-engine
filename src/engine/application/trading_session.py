@@ -1,9 +1,10 @@
-"""TradingSession — orquestrador de decisão do EA v4.60 (F2c + F3b + F3c + F5a).
+"""TradingSession — orquestrador de decisão do EA v4.60 (F2c + F3b + F3c + F5a + F5c).
 
 F2c: on_bar_closed + on_tick (filtros de sessão + TradeIntent).
 F3b: on_trade_event + rastreamento do trade atual.
 F3c: save_state / _load_state / _snapshot (persistência opcional).
 F5a: _make_intent preenche `partials`; on_trade_event rastreia parciais.
+F5c: _maybe_arm_reentry + ReentryIntent (reforço no retorno à entrada).
 
 Não executa ordens. Não gerencia posições. Não acessa MT5.
 """
@@ -13,12 +14,19 @@ from datetime import datetime, time, timedelta
 
 import structlog
 
-from engine.application.intent import BarResult, TickDecision, TradeIntent
+from engine.application.intent import (
+    BarResult,
+    ReentryIntent,
+    TickDecision,
+    TradeIntent,
+)
 from engine.application.partial_spec import make_partial_specs
 from engine.application.trade_events import (
     EntryFilled,
     PartialFilled,
     PositionClosed,
+    ReentryExitFilled,
+    ReentryFilled,
     StopLossHit,
     TakeProfitHit,
     TradeEvent,
@@ -114,9 +122,15 @@ class TradingSession:
         # F3b: rastreamento do trade atual
         self._current_entry_region: datetime | None = None
         self._current_entry_position: int | None = None
+        self._current_entry_price: float | None = None      # F5c
+        self._current_is_buy: bool | None = None            # F5c
 
         # F5a: rastreamento das parciais preenchidas
         self._partials_filled: list[int] = []
+
+        # F5c: rastreamento do reforço
+        self._reentry_armed: bool = False
+        self._reentry_done: bool = False
 
         # Callbacks para o region_manager
         self._stop_level_fn = lambda loc, is_buy: stop_level(loc, is_buy, self._pricing)
@@ -155,22 +169,31 @@ class TradingSession:
         return self._current_entry_position
 
     @property
+    def current_entry_price(self) -> float | None:
+        return self._current_entry_price
+
+    @property
     def partials_filled(self) -> list[int]:
-        """Lista de tier_index já preenchidos no trade atual (F5a)."""
         return list(self._partials_filled)
 
+    @property
+    def reentry_armed(self) -> bool:
+        return self._reentry_armed
+
+    @property
+    def reentry_done(self) -> bool:
+        return self._reentry_done
+
     # ----------------------------------------------------------------
-    # Persistência (F3c)
+    # Persistência (F3c) — NÃO salva parciais/reentry (são em memória)
     # ----------------------------------------------------------------
     def save_state(self) -> None:
-        """Serializa o estado atual no `state_store` (se houver)."""
         if self._store is None:
             return
         self._store.save_session(self._snapshot())
         self._store.save_regions(self._regions.all())
 
     def _load_state(self) -> None:
-        """Carrega do `state_store` (chamado no `__init__`)."""
         if self._store is None:
             return
         snap = self._store.load_session()
@@ -203,7 +226,6 @@ class TradingSession:
                     live.rearmed_once = region.rearmed_once
 
     def _snapshot(self) -> SessionSnapshot:
-        """Estado serializável da sessão."""
         return SessionSnapshot(
             last_sl_time=self._last_sl_time,
             trades_today=self._trades_today,
@@ -263,7 +285,7 @@ class TradingSession:
         )
 
     # ----------------------------------------------------------------
-    # on_tick
+    # on_tick — F2c + F5c
     # ----------------------------------------------------------------
     def on_tick(self, snapshot: MarketSnapshot) -> TickDecision:
         now = snapshot.now
@@ -284,61 +306,184 @@ class TradingSession:
         if just_broke or expired:
             self.save_state()
 
+        # F5c: atualiza estado do reforço (armar / detectar retorno)
+        reentry_intent = self._maybe_reentry(snapshot)
+
         blocked = self._session_block_reason(snapshot)
         if blocked is not None:
-            return TickDecision(intent=None, blocked_reason=blocked,
-                                new_breakouts=len(just_broke),
-                                expired=len(expired))
+            return TickDecision(
+                intent=None, blocked_reason=blocked,
+                new_breakouts=len(just_broke),
+                expired=len(expired),
+                reentry_intent=reentry_intent,
+            )
 
         gov = self._regions.governing()
         if gov is None:
-            return TickDecision(intent=None, blocked_reason=None,
-                                new_breakouts=len(just_broke),
-                                expired=len(expired))
+            return TickDecision(
+                intent=None, blocked_reason=None,
+                new_breakouts=len(just_broke),
+                expired=len(expired),
+                reentry_intent=reentry_intent,
+            )
 
         if not self._carry_delay_ok(gov, now):
-            return TickDecision(intent=None, blocked_reason="carry_delay",
-                                new_breakouts=len(just_broke),
-                                expired=len(expired))
+            return TickDecision(
+                intent=None, blocked_reason="carry_delay",
+                new_breakouts=len(just_broke),
+                expired=len(expired),
+                reentry_intent=reentry_intent,
+            )
 
         intent = self._make_intent(gov, snapshot)
         if intent is None:
-            return TickDecision(intent=None, blocked_reason="not_ready",
-                                new_breakouts=len(just_broke),
-                                expired=len(expired))
+            return TickDecision(
+                intent=None, blocked_reason="not_ready",
+                new_breakouts=len(just_broke),
+                expired=len(expired),
+                reentry_intent=reentry_intent,
+            )
 
-        return TickDecision(intent=intent,
-                            new_breakouts=len(just_broke),
-                            expired=len(expired))
+        return TickDecision(
+            intent=intent,
+            new_breakouts=len(just_broke),
+            expired=len(expired),
+            reentry_intent=reentry_intent,
+        )
 
     # ----------------------------------------------------------------
-    # Notificações (F2c + F3b + F3c + F5a)
+    # F5c: reforço no retorno à entrada
+    # ----------------------------------------------------------------
+    def _maybe_reentry(self, snapshot: MarketSnapshot) -> ReentryIntent | None:
+        """Detecta se é hora de armar o reforço e, se o preço voltou,
+        emite a `ReentryIntent` (o caller materializa a ordem).
+
+        Regras (espelham o EA v4.60):
+          1. Só se `use_reentry=True` e `_current_entry_price` existe.
+          2. Só se `_reentry_done=False` (1 reforço por trade).
+          3. **Armar:** preço avança `arm_points` a favor → `_reentry_armed=True`.
+          4. **Emitir:** `_reentry_armed=True` e preço voltou ao `entry_price` →
+             `_reentry_done=True`, retorna `ReentryIntent`.
+          5. Se `_reentry_done=True`, não faz mais nada.
+        """
+        risk = self._preset.risk
+        if not risk.use_reentry:
+            return None
+        if self._current_entry_price is None or self._current_is_buy is None:
+            return None
+        if self._reentry_done:
+            return None
+
+        entry = self._current_entry_price
+        is_buy = self._current_is_buy
+
+        # 1) Ainda não armou? Checa se o preço avançou o suficiente.
+        if not self._reentry_armed:
+            arm_points = risk.reentry_arm_points
+            if is_buy:
+                advanced = snapshot.bid >= entry + arm_points
+            else:
+                advanced = snapshot.ask <= entry - arm_points
+            if advanced:
+                self._reentry_armed = True
+                log.info(
+                    "reentry_armed",
+                    entry=entry, is_buy=is_buy,
+                    price=snapshot.bid if is_buy else snapshot.ask,
+                    arm_points=arm_points,
+                )
+            return None
+
+        # 2) Armado: checa se o preço voltou ao entry (fill de limite)
+        if is_buy:
+            filled = snapshot.bid <= entry
+        else:
+            filled = snapshot.ask >= entry
+
+        if not filled:
+            return None
+
+        # 3) Preço voltou → emite ReentryIntent e marca como feito
+        self._reentry_done = True
+        self._reentry_armed = False
+        log.info(
+            "reentry_triggered",
+            entry=entry, is_buy=is_buy,
+            price=snapshot.bid if is_buy else snapshot.ask,
+            contracts=risk.reentry_contracts,
+        )
+        return ReentryIntent(
+            entry_price=entry,
+            is_buy=is_buy,
+            contracts=risk.reentry_contracts,
+            tp_points=risk.reentry_tp_points,
+            sl_points=risk.reentry_sl_points,
+            created_at=snapshot.now,
+        )
+
+    # ----------------------------------------------------------------
+    # Notificações (F2c + F3b + F3c + F5a + F5c)
     # ----------------------------------------------------------------
     def notify_stop_loss(self, now: datetime) -> None:
         self._last_sl_time = now
         self.save_state()
 
     def notify_trade_opened(
-        self, now: datetime, region_bar_time: datetime | None = None
+        self,
+        now: datetime,
+        region_bar_time: datetime | None = None,
+        entry_price: float | None = None,
+        is_buy: bool | None = None,
     ) -> None:
         self._maybe_reset_daily(now)
         self._trades_today += 1
         if region_bar_time is not None:
             self._current_entry_region = region_bar_time
-        self._partials_filled = []  # F5a: novo trade, zera parciais
+        if entry_price is not None:
+            self._current_entry_price = entry_price
+        if is_buy is not None:
+            self._current_is_buy = is_buy
+        self._partials_filled = []
+        self._reentry_armed = False
+        self._reentry_done = False
         self.save_state()
 
     def notify_position_closed(self, now: datetime) -> None:
         self._current_entry_region = None
         self._current_entry_position = None
-        self._partials_filled = []  # F5a: trade fechado, zera parciais
+        self._current_entry_price = None
+        self._current_is_buy = None
+        self._partials_filled = []
+        self._reentry_armed = False
+        self._reentry_done = False
         self.save_state()
 
     # ----------------------------------------------------------------
-    # on_trade_event — F3b + F5a
+    # on_trade_event — F3b + F5a + F5c
     # ----------------------------------------------------------------
     def on_trade_event(self, event: TradeEvent, now: datetime) -> None:
-        """Reage a um evento de deal do MT5."""
+        if isinstance(event, ReentryFilled):
+            # F5c: reforço preenchido. `_reentry_done` já foi marcado.
+            log.info(
+                "trade_event_reentry_filled",
+                position=event.position_ticket,
+                volume=event.deal.volume,
+                price=event.deal.price,
+            )
+            self.save_state()
+            return
+
+        if isinstance(event, ReentryExitFilled):
+            # F5c: TP ou SL do reforço executou. Não muda a posição original.
+            log.info(
+                "trade_event_reentry_exit",
+                position=event.position_ticket,
+                is_tp=event.is_tp,
+                price=event.deal.price,
+            )
+            self.save_state()
+            return
+
         if isinstance(event, EntryFilled):
             self._current_entry_position = event.position_ticket
             log.info("trade_event_entry", position=event.position_ticket,
@@ -347,7 +492,6 @@ class TradingSession:
             return
 
         if isinstance(event, PartialFilled):
-            # F5a: rastreia qual tier executou. Não muda a região.
             tier = self._infer_tier_from_comment(event.deal.comment)
             if tier is not None and tier not in self._partials_filled:
                 self._partials_filled.append(tier)
@@ -370,14 +514,12 @@ class TradingSession:
             return
 
     def _infer_tier_from_comment(self, comment: str) -> int | None:
-        """Extrai tier_index do comment (ex: 'engine_partial_1' → 0)."""
         c = (comment or "").lower()
         if "partial" not in c:
             return None
-        # Espera formatos: "partial_1", "partial_2", "partial_3"
         for i in (1, 2, 3):
             if f"partial_{i}" in c:
-                return i - 1  # 0-based
+                return i - 1
         return None
 
     # ----------------------------------------------------------------
@@ -491,7 +633,6 @@ class TradingSession:
             entry_price = level
             reason = "pullback"
 
-        # F5a: parciais do preset
         risk = self._preset.risk
         partials = make_partial_specs(
             use_partial_exit=risk.use_partial_exit,

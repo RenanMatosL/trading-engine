@@ -1,7 +1,7 @@
 """Resultado de decisão do TradingSession.
 
 - TradeIntent: "o Executor deve abrir/armar ordem com estes parâmetros"
-- TickDecision: o que aconteceu no on_tick (intent + diagnóstico)
+- TickDecision: o que aconteceu no on_tick (intent + reentry_intent + diagnóstico)
 - BarResult:    o que aconteceu no on_bar_closed (região criada ou motivo de skip)
 
 Todos imutáveis. Zero dependência de MT5 ou de ordens.
@@ -43,12 +43,34 @@ class TradeIntent:
 
 
 @dataclass(frozen=True, slots=True)
+class ReentryIntent:
+    """Intenção de REFORÇO (F5c).
+
+    Emitida pelo `TradingSession` quando o preço avança `reentry_arm_points`
+    a favor e depois RETORNA ao preço de entrada. O `engine run` materializa
+    via `executor.place_reentry_order(...)`.
+
+    `entry_price`: preço de entrada original (o reforço entra neste preço).
+    `contracts`: quantos contratos adicionar.
+    `tp_points`: TP curto do reforço (a partir do `entry_price`).
+    `sl_points`: SL do reforço (a partir do `entry_price`).
+    """
+    entry_price: float
+    is_buy: bool
+    contracts: int
+    tp_points: float
+    sl_points: float
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class TickDecision:
     """Resultado do on_tick()."""
     intent: TradeIntent | None
     blocked_reason: str | None = None
     new_breakouts: int = 0
     expired: int = 0
+    reentry_intent: ReentryIntent | None = None   # F5c
 
 
 @dataclass(frozen=True, slots=True)

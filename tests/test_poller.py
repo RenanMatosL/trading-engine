@@ -17,11 +17,16 @@ from typing import Any
 
 import pytest
 
-from engine.application.poller import (
+from engine.application.poller import TradeEventPoller
+from engine.application.trade_events import (
     DEAL_REASON_CLIENT,
     DEAL_REASON_SL,
     DEAL_REASON_TP,
-    TradeEventPoller,
+    EntryFilled,
+    PartialFilled,
+    PositionClosed,
+    StopLossHit,
+    TakeProfitHit,
 )
 from engine.application.trade_events import (
     EntryFilled,
@@ -323,3 +328,43 @@ def test_poller_integracao_com_fake_gateway():
     assert len(events) == 1
     assert isinstance(events[0], EntryFilled)
     assert events[0].deal.volume == 6.0
+
+
+
+#+------------------------------------------------------------------+
+#| F5c — Reforço (ReentryFilled + ReentryExitFilled)               |
+#+------------------------------------------------------------------+
+def test_poller_reentry_filled():
+    """Deal de ENTRADA com comment 'reentry' → ReentryFilled."""
+    from engine.application.trade_events import ReentryFilled
+    gw = _FakeGatewayWithDeals([
+        _deal(ticket=200, is_entry=True, comment="engine_reentry",
+              time_offset_min=10),
+    ])
+    poller = TradeEventPoller()
+
+    events = poller.poll(gw, since=T0, symbol="WIN$N", magic=0)
+
+    assert len(events) == 1
+    assert isinstance(events[0], ReentryFilled)
+    assert events[0].deal.ticket == 200
+
+
+def test_poller_reentry_exit_filled():
+    """Deal de SAÍDA com comment 'reentry_tp' ou 'reentry_sl' → ReentryExitFilled."""
+    from engine.application.trade_events import ReentryExitFilled
+    gw = _FakeGatewayWithDeals([
+        _deal(ticket=201, is_entry=False, reason=DEAL_REASON_TP,
+              comment="engine_reentry_tp", time_offset_min=20),
+        _deal(ticket=202, is_entry=False, reason=DEAL_REASON_SL,
+              comment="engine_reentry_sl", time_offset_min=22),
+    ])
+    poller = TradeEventPoller()
+
+    events = poller.poll(gw, since=T0, symbol="WIN$N", magic=0)
+
+    assert len(events) == 2
+    assert isinstance(events[0], ReentryExitFilled)
+    assert events[0].is_tp is True
+    assert isinstance(events[1], ReentryExitFilled)
+    assert events[1].is_tp is False
