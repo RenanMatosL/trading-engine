@@ -193,3 +193,68 @@ def test_rearm_apos_sl_sem_limite():
         mgr.update_breakouts(_snap(ask=1001.0, bid=1001.0,
                                     now=T0 + (i + 2) * TICK),
                               stop_level_fn=STOP, take_profit_fn=TP)
+
+
+
+#+------------------------------------------------------------------+
+#| F5d — validade por pregões reais (B3Calendar)                   |
+#+------------------------------------------------------------------+
+def test_regiao_expira_por_pregoes_nao_por_dias_corridos():
+    """Região criada na sexta com valid_days=2 expira na terça
+    (segunda é feriado, então só conta terça).
+    """
+    from datetime import date
+    from engine.domain.risk.exchange_calendar import B3Calendar
+    from engine.domain.strategy.regions import RegionManager
+
+    cal = B3Calendar()
+    mgr = RegionManager(valid_days=2, calendar=cal)
+
+    # Sexta 2026-10-30
+    t_sexta = datetime(2026, 10, 30, 10, 0)
+    mgr.register(
+        bar_time=t_sexta, high=1000.0, low=900.0,
+        volume=5000.0, big_candle=False, now=t_sexta,
+    )
+
+    # Domingo: ainda válida (só 1 dia útil passou? não — sábado/domingo não contam)
+    # Vamos checar em 2026-11-03 (terça): sexta → segunda (feriado) → terça = 1 pregão
+    t_terca = datetime(2026, 11, 3, 10, 0)
+    # 2 pregões: sexta (0), terça (1). Ainda válida.
+    # Expiraria só em 2026-11-04 (quarta) = 2 pregões.
+    expired = mgr.sweep_expired(t_terca)
+    assert len(expired) == 0
+    assert mgr.get(t_sexta) is not None
+
+
+def test_regiao_expira_apos_2_pregoes():
+    """Região criada na sexta 2026-10-30 com valid_days=2.
+
+    Pregões depois da sexta:
+      - 2026-11-03 (terça) = pregão 1
+      - 2026-11-04 (quarta) = pregão 2  → ainda válida
+      - 2026-11-05 (quinta) = pregão 3  → expira
+    """
+    from engine.domain.risk.exchange_calendar import B3Calendar
+    from engine.domain.strategy.regions import RegionManager
+
+    cal = B3Calendar()
+    mgr = RegionManager(valid_days=2, calendar=cal)
+
+    t_sexta = datetime(2026, 10, 30, 10, 0)
+    mgr.register(
+        bar_time=t_sexta, high=1000.0, low=900.0,
+        volume=5000.0, big_candle=False, now=t_sexta,
+    )
+
+    # Quarta 2026-11-04: shift=2 → ainda válida (limite)
+    t_quarta = datetime(2026, 11, 4, 10, 0)
+    expired = mgr.sweep_expired(t_quarta)
+    assert len(expired) == 0
+    assert mgr.get(t_sexta) is not None
+
+    # Quinta 2026-11-05: shift=3 → expira
+    t_quinta = datetime(2026, 11, 5, 10, 0)
+    expired = mgr.sweep_expired(t_quinta)
+    assert len(expired) == 1
+    assert mgr.get(t_sexta).phase.value == "CONSUMED"

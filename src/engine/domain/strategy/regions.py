@@ -13,7 +13,7 @@ pytest puro usando `MarketSnapshot` e listas de candles.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from enum import Enum
 from typing import Callable
 
@@ -24,6 +24,8 @@ from engine.domain.strategy.location import (
     RegionState,
     TradeLocation,
 )
+from engine.domain.risk.calendar import TradingWindow
+from engine.domain.risk.exchange_calendar import B3Calendar
 
 
 # Parâmetros do EA v4.60 (default) que afetam o gerenciador de regiões.
@@ -55,6 +57,7 @@ class RegionManager:
         valid_days: int = DEFAULT_VALID_DAYS,
         breakout_ttl_min: int = DEFAULT_BREAKOUT_TTL_MIN,
         candidate_mode: CandidateMode = CandidateMode.HIGHEST_VOLUME,
+        calendar: B3Calendar | None = None,
     ) -> None:
         if max_loc < 1:
             raise ValueError("max_loc deve ser >= 1")
@@ -66,6 +69,7 @@ class RegionManager:
         self._valid_days = valid_days
         self._ttl = timedelta(minutes=breakout_ttl_min)
         self._candidate_mode = candidate_mode
+        self._calendar = calendar
         self._regions: dict[datetime, RegionState] = {}
 
     # ----------------------------------------------------------------
@@ -181,6 +185,24 @@ class RegionManager:
         return expired
 
     def _is_within_validity(self, state: RegionState, now: datetime) -> bool:
+        """Validade da região por `valid_days` pregões.
+
+        - Com `B3Calendar` (F5d): conta **pregões reais** (dias úteis
+          sem feriados), via `TradingWindow.session_shift`.
+        - Sem `B3Calendar`: fallback para **dias corridos** (comportamento
+          antigo, para testes que não injetam calendar).
+        """
+        if self._calendar is not None:
+            shift = TradingWindow(
+                start=time(0, 0), end=time(0, 0),  # irrelevante p/ session_shift
+            ).session_shift(
+                bar_time=state.bar_time,
+                now=now,
+                calendar=self._calendar,
+            )
+            return shift <= self._valid_days
+
+        # Fallback: dias corridos (comportamento antigo)
         delta_days = (now.date() - state.bar_time.date()).days
         return delta_days <= self._valid_days
 
