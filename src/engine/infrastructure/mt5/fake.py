@@ -2,7 +2,7 @@
 
 Simula fills imediatos (market) ou preenchimento por preço (limit).
 O book interno é simples: aceita qualquer ordem, marca como executada.
-Suficiente para testar o RealExecutor (F3a) sem MT5.
+Suficiente para testar o RealExecutor (F3a) + run/shadow (F3d/F4) sem MT5.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from engine.infrastructure.mt5.gateway import (
     OrderResult,
     PositionInfo,
     SymbolInfo,
+    TickInfo,
 )
 
 
@@ -89,6 +90,18 @@ class FakeGateway:
     def symbol_info(self, symbol: str) -> SymbolInfo:
         return self._symbol_info
 
+    def symbol_info_tick(self, symbol: str) -> TickInfo:
+        # Preço sintético: 171000 ± jitter determinístico (por seed)
+        jitter = self._rng.uniform(-50.0, 50.0)
+        mid = 171_000.0 + jitter
+        self._last_ask = mid + 5.0
+        self._last_bid = mid - 5.0
+        return TickInfo(
+            ask=self._last_ask,
+            bid=self._last_bid,
+            time=datetime.now(tz=timezone.utc),
+        )
+
     def closed_bars(self, symbol: str, timeframe: str, count: int) -> list[Bar]:
         bars: list[Bar] = []
         t = datetime.now(tz=timezone.utc).replace(second=0, microsecond=0)
@@ -114,7 +127,6 @@ class FakeGateway:
         self._next_ticket += 1
 
         if req.is_limit:
-            # Ordem limite: registra pendente, sem fill imediato
             order = _PendingOrder(
                 ticket=ticket, symbol=req.symbol, is_buy=req.is_buy,
                 is_limit=True, volume=req.volume, price=req.price,
@@ -125,7 +137,6 @@ class FakeGateway:
             self._orders[ticket] = order
             return OrderResult(RETCODE_DONE, ticket, 0, "limit accepted")
 
-        # Ordem a mercado: abre posição imediatamente
         pos = _OpenPosition(
             ticket=ticket, symbol=req.symbol, is_buy=req.is_buy,
             volume=req.volume, price_open=req.price,
@@ -162,7 +173,6 @@ class FakeGateway:
         pos = self._positions.pop(ticket, None)
         if pos is None:
             return OrderResult(-1, 0, 0, f"posição {ticket} não encontrada")
-        # Registra deal de saída
         self._deals.append(DealInfo(
             ticket=self._next_ticket, order_ticket=self._next_ticket,
             position_ticket=ticket, symbol=pos.symbol, is_buy=pos.is_buy,
@@ -202,7 +212,6 @@ class FakeGateway:
     def history_deals(
         self, since: datetime, *, symbol: str | None = None, magic: int | None = None
     ) -> list[DealInfo]:
-        # Normaliza `since` para aware UTC (o caller pode passar naive)
         if since.tzinfo is None:
             since = since.replace(tzinfo=timezone.utc)
         out = []

@@ -1,8 +1,9 @@
-"""TradingSession — orquestrador de decisão do EA v4.60 (F2c + F3b + F3c).
+"""TradingSession — orquestrador de decisão do EA v4.60 (F2c + F3b + F3c + F5a).
 
 F2c: on_bar_closed + on_tick (filtros de sessão + TradeIntent).
-F3b: on_trade_event + rastreamento do trade atual (para rearme/consumo).
-F3c: save_state / _load_state / _snapshot (persistência opcional via StateStore).
+F3b: on_trade_event + rastreamento do trade atual.
+F3c: save_state / _load_state / _snapshot (persistência opcional).
+F5a: _make_intent preenche `partials`; on_trade_event rastreia parciais.
 
 Não executa ordens. Não gerencia posições. Não acessa MT5.
 """
@@ -13,6 +14,7 @@ from datetime import datetime, time, timedelta
 import structlog
 
 from engine.application.intent import BarResult, TickDecision, TradeIntent
+from engine.application.partial_spec import make_partial_specs
 from engine.application.trade_events import (
     EntryFilled,
     PartialFilled,
@@ -111,7 +113,10 @@ class TradingSession:
 
         # F3b: rastreamento do trade atual
         self._current_entry_region: datetime | None = None
-        self._current_entry_position: int | None = None  # position_ticket
+        self._current_entry_position: int | None = None
+
+        # F5a: rastreamento das parciais preenchidas
+        self._partials_filled: list[int] = []
 
         # Callbacks para o region_manager
         self._stop_level_fn = lambda loc, is_buy: stop_level(loc, is_buy, self._pricing)
@@ -149,6 +154,11 @@ class TradingSession:
     def current_entry_position(self) -> int | None:
         return self._current_entry_position
 
+    @property
+    def partials_filled(self) -> list[int]:
+        """Lista de tier_index já preenchidos no trade atual (F5a)."""
+        return list(self._partials_filled)
+
     # ----------------------------------------------------------------
     # Persistência (F3c)
     # ----------------------------------------------------------------
@@ -173,9 +183,6 @@ class TradingSession:
 
         stored_regions = self._store.load_regions()
         if stored_regions:
-            # Recria o RegionManager com as regiões persistidas.
-            # `now` no `register` é `broken_time` (ou `bar_time`) para não
-            # serem descartadas por validade logo após o restart.
             for region in stored_regions:
                 self._regions.register(
                     bar_time=region.location.bar_time,
@@ -185,7 +192,6 @@ class TradingSession:
                     big_candle=region.location.big_candle,
                     now=region.broken_time or region.location.bar_time,
                 )
-            # Aplica o estado (phase, is_buy, SL, TP, etc.)
             for region in stored_regions:
                 live = self._regions.get(region.location.bar_time)
                 if live is not None:
@@ -306,7 +312,7 @@ class TradingSession:
                             expired=len(expired))
 
     # ----------------------------------------------------------------
-    # Notificações (F2c + F3b + F3c)
+    # Notificações (F2c + F3b + F3c + F5a)
     # ----------------------------------------------------------------
     def notify_stop_loss(self, now: datetime) -> None:
         self._last_sl_time = now
@@ -315,37 +321,24 @@ class TradingSession:
     def notify_trade_opened(
         self, now: datetime, region_bar_time: datetime | None = None
     ) -> None:
-        """Chamado pelo Executor quando uma entrada é executada.
-
-        Em F3b, o `region_bar_time` é passado explicitamente pelo `engine run`
-        (que sabe a região do `TradeIntent`). Em F2d, era chamado sem região.
-        """
         self._maybe_reset_daily(now)
         self._trades_today += 1
         if region_bar_time is not None:
             self._current_entry_region = region_bar_time
+        self._partials_filled = []  # F5a: novo trade, zera parciais
         self.save_state()
 
     def notify_position_closed(self, now: datetime) -> None:
-        """Limpa o rastreamento do trade atual (chamado após SL/TP/close)."""
         self._current_entry_region = None
         self._current_entry_position = None
+        self._partials_filled = []  # F5a: trade fechado, zera parciais
         self.save_state()
 
     # ----------------------------------------------------------------
-    # on_trade_event — F3b
+    # on_trade_event — F3b + F5a
     # ----------------------------------------------------------------
     def on_trade_event(self, event: TradeEvent, now: datetime) -> None:
-        """Reage a um evento de deal do MT5.
-
-        Reações:
-          - EntryFilled:   rastreia a posição + contador diário (já incrementado
-                           pelo Executor via notify_trade_opened; idempotente).
-          - PartialFilled: notifica parcial (F5 implementa lógica real).
-          - StopLossHit:   ativa cooldown + rearma/consome a região.
-          - TakeProfitHit: consome a região.
-          - PositionClosed: consome a região (fim de dia, close manual).
-        """
+        """Reage a um evento de deal do MT5."""
         if isinstance(event, EntryFilled):
             self._current_entry_position = event.position_ticket
             log.info("trade_event_entry", position=event.position_ticket,
@@ -354,8 +347,14 @@ class TradingSession:
             return
 
         if isinstance(event, PartialFilled):
+            # F5a: rastreia qual tier executou. Não muda a região.
+            tier = self._infer_tier_from_comment(event.deal.comment)
+            if tier is not None and tier not in self._partials_filled:
+                self._partials_filled.append(tier)
             log.info("trade_event_partial", position=event.position_ticket,
-                     volume=event.deal.volume, remaining=event.remaining_volume)
+                     volume=event.deal.volume, remaining=event.remaining_volume,
+                     tier=tier, partials_filled=list(self._partials_filled))
+            self.save_state()
             return
 
         if isinstance(event, StopLossHit):
@@ -369,6 +368,17 @@ class TradingSession:
         if isinstance(event, PositionClosed):
             self._handle_close(event.position_ticket, now)
             return
+
+    def _infer_tier_from_comment(self, comment: str) -> int | None:
+        """Extrai tier_index do comment (ex: 'engine_partial_1' → 0)."""
+        c = (comment or "").lower()
+        if "partial" not in c:
+            return None
+        # Espera formatos: "partial_1", "partial_2", "partial_3"
+        for i in (1, 2, 3):
+            if f"partial_{i}" in c:
+                return i - 1  # 0-based
+        return None
 
     # ----------------------------------------------------------------
     def _handle_sl(self, position_ticket: int, now: datetime) -> None:
@@ -458,7 +468,7 @@ class TradingSession:
         return now >= session_start + timedelta(minutes=sess.carry_entry_delay_min)
 
     # ----------------------------------------------------------------
-    # Construção do TradeIntent
+    # Construção do TradeIntent — F2c + F5a
     # ----------------------------------------------------------------
     def _make_intent(
         self, region: RegionState, snapshot: MarketSnapshot
@@ -481,6 +491,16 @@ class TradingSession:
             entry_price = level
             reason = "pullback"
 
+        # F5a: parciais do preset
+        risk = self._preset.risk
+        partials = make_partial_specs(
+            use_partial_exit=risk.use_partial_exit,
+            tiers=risk.tiers,
+            exit_type=risk.exit_type,
+            partial_points=risk.partial_points,
+            partial_percent=risk.partial_percent,
+        )
+
         return TradeIntent(
             region=region,
             is_buy=is_buy,
@@ -491,4 +511,5 @@ class TradingSession:
             as_pending=self._preset.entry.as_pending,
             reason=reason,
             created_at=snapshot.now,
+            partials=partials,
         )

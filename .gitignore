@@ -3,15 +3,22 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.egg-info/
 
 # Configurações locais e segredos (NUNCA subir)
 .env
 .env.*
 !.env.example
 
-# Banco de dados local (se houver na F3)
+# Banco de dados local (engine run)
+engine.db
+engine_demo.db
+engine_shadow.db
 *.db
 *.sqlite3
+
+# Relatórios (modo sombra)
+reports/
 
 # IDEs e Sistema
 .idea/
@@ -20,6 +27,3 @@ __pycache__/
 
 # Logs
 *.log
-
-# Fixtures grandes (Opcional: se o CSV for muito grande, comente a linha abaixo)
-# tests/fixtures/v510_expected.csv

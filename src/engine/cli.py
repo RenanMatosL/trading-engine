@@ -15,6 +15,7 @@ from engine.application.executor import RealExecutor
 from engine.application.poller import TradeEventPoller
 from engine.application.shadow import ShadowComparer
 from engine.application.status import get_status
+from engine.application.trade_events import PartialFilled
 from engine.application.trading_session import TradingSession
 from engine.config.presets import load_preset
 from engine.config.settings import EngineSettings
@@ -85,12 +86,10 @@ def cmd_check_config(args: argparse.Namespace, settings: EngineSettings) -> int:
 
 
 def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
-    """Loop principal — conecta, processa ticks, decide e executa.
+    """Loop principal — conecta, processa ticks, decide, executa.
 
-    --dry-run: usa FakeGateway (não conecta em MT5)
-    --fast:    não dorme entre iterações (para testes)
-    --max-ticks N: para após N iterações (0 = infinito)
-    --db PATH: caminho do SQLite (default: engine.db)
+    F5a: após executar um TradeIntent com parciais, arma as ordens limite.
+    Após um PartialFilled de Tier 1, move SL para breakeven (se configurado).
     """
     preset = load_preset(args.preset or settings.preset)
     symbol = settings.mt5.symbol
@@ -123,6 +122,7 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
     last_poll_time = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
     ticks = 0
     end_of_day_done_today: datetime | None = None
+    breakeven_applied_for_trade: bool = False  # F5a: 1x por trade
 
     log.info("engine_run_start",
              symbol=symbol, dry_run=args.dry_run, preset=preset.name,
@@ -168,6 +168,12 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
                         now=snapshot.now,
                         region_bar_time=decision.intent.bar_time,
                     )
+                    breakeven_applied_for_trade = False
+                    # F5a: arma as parciais (se houver)
+                    if decision.intent.partials:
+                        executor.place_partial_orders(
+                            decision.intent, symbol=symbol,
+                        )
 
             try:
                 events = poller.poll(
@@ -180,6 +186,36 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
 
             for ev in events:
                 session.on_trade_event(ev, now=now)
+
+                # F5a: breakeven após Tier 1 (1x por trade)
+                if (isinstance(ev, PartialFilled)
+                        and preset.risk.breakeven_after_partial
+                        and not breakeven_applied_for_trade):
+                    tier = session._infer_tier_from_comment(ev.deal.comment)
+                    if tier == 0 and session.current_entry_position is not None:
+                        pos = session.current_entry_position
+                        # Move SL para entry; mantém TP atual
+                        positions = gw.positions(symbol)
+                        current_tp = 0.0
+                        for p in positions:
+                            if p.ticket == pos:
+                                current_tp = p.take_profit
+                                break
+                        be_price = (
+                            decision.intent.entry_price
+                            if decision.intent is not None else 0.0
+                        )
+                        if be_price > 0:
+                            modify = executor.modify(
+                                pos, stop_loss=be_price,
+                                take_profit=current_tp,
+                            )
+                            if modify.is_ok:
+                                breakeven_applied_for_trade = True
+                                log.info(
+                                    "breakeven_applied",
+                                    position=pos, price=be_price,
+                                )
 
             if preset.session.close_outside:
                 cur_time = now.time()
@@ -218,12 +254,7 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
 
 
 def cmd_shadow(args: argparse.Namespace, settings: EngineSettings) -> int:
-    """Roda o motor Python em paralelo ao EA e gera relatório de divergências.
-
-    Requer MT5 aberto (não funciona com --dry-run).
-    O Python coloca ordens com seu próprio magic; o EA com `--ea-magic`.
-    Ao fim de `--duration` minutos, compara `history_deals` dos dois e gera JSON.
-    """
+    """Roda o motor Python em paralelo ao EA e gera relatório de divergências."""
     ea_magic = args.ea_magic
     py_magic = args.py_magic
     duration_min = args.duration
@@ -281,6 +312,10 @@ def cmd_shadow(args: argparse.Namespace, settings: EngineSettings) -> int:
                         now=snapshot.now,
                         region_bar_time=decision.intent.bar_time,
                     )
+                    if decision.intent.partials:
+                        executor.place_partial_orders(
+                            decision.intent, symbol=symbol,
+                        )
 
             try:
                 events = poller.poll(
@@ -303,7 +338,6 @@ def cmd_shadow(args: argparse.Namespace, settings: EngineSettings) -> int:
         session.save_state()
         store.close()
 
-    # Coleta deals do EA na janela
     try:
         ea_deals = gw.history_deals(start, symbol=symbol, magic=ea_magic)
     except Exception as exc:  # noqa: BLE001
@@ -344,50 +378,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Diario em JSON")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    # status
     p_status = sub.add_parser("status", help="Conta, simbolo e leitura do detector")
-    p_status.add_argument("--fake", action="store_true",
-                          help="Gateway sintetico (desenvolvimento sem MT5)")
+    p_status.add_argument("--fake", action="store_true")
     p_status.add_argument("--preset", default=None)
 
-    # check-config
     p_check = sub.add_parser("check-config", help="Valida o preset e mostra os parametros")
     p_check.add_argument("--preset", default=None)
 
-    # run
     p_run = sub.add_parser("run", help="Roda o motor em tempo real")
-    p_run.add_argument("--dry-run", action="store_true",
-                       help="Usa FakeGateway (não conecta em MT5)")
-    p_run.add_argument("--demo", action="store_true",
-                       help="Conecta em conta demo (RealMT5Gateway)")
+    p_run.add_argument("--dry-run", action="store_true")
+    p_run.add_argument("--demo", action="store_true")
     p_run.add_argument("--preset", default=None)
-    p_run.add_argument("--db", default="engine.db",
-                       help="Caminho do SQLite (default: engine.db)")
-    p_run.add_argument("--poll-interval", type=float, default=1.0,
-                       help="Segundos entre iterações (default: 1.0)")
-    p_run.add_argument("--max-ticks", type=int, default=0,
-                       help="Para após N iterações (0 = infinito)")
-    p_run.add_argument("--fast", action="store_true",
-                       help="Não dorme entre iterações (para testes)")
+    p_run.add_argument("--db", default="engine.db")
+    p_run.add_argument("--poll-interval", type=float, default=1.0)
+    p_run.add_argument("--max-ticks", type=int, default=0)
+    p_run.add_argument("--fast", action="store_true")
 
-    # shadow
     p_shadow = sub.add_parser("shadow", help="Modo sombra: compara decisões com EA")
-    p_shadow.add_argument("--ea-magic", type=int, required=True,
-                          help="Magic do EA (ex: 20260718)")
-    p_shadow.add_argument("--py-magic", type=int, default=0,
-                          help="Magic do Python (default: 0)")
-    p_shadow.add_argument("--duration", type=int, default=60,
-                          help="Duração em minutos (default: 60)")
-    p_shadow.add_argument("--poll-interval", type=float, default=2.0,
-                          help="Segundos entre iterações (default: 2.0)")
-    p_shadow.add_argument("--tolerance-points", type=float, default=2.0,
-                          help="Tolerância de preço (default: 2.0)")
-    p_shadow.add_argument("--report-dir", default="reports",
-                          help="Diretório dos relatórios (default: reports/)")
+    p_shadow.add_argument("--ea-magic", type=int, required=True)
+    p_shadow.add_argument("--py-magic", type=int, default=0)
+    p_shadow.add_argument("--duration", type=int, default=60)
+    p_shadow.add_argument("--poll-interval", type=float, default=2.0)
+    p_shadow.add_argument("--tolerance-points", type=float, default=2.0)
+    p_shadow.add_argument("--report-dir", default="reports")
     p_shadow.add_argument("--db", default="engine_shadow.db")
     p_shadow.add_argument("--preset", default=None)
 
-    # version
     sub.add_parser("version", help="Versao do motor")
 
     args = parser.parse_args(argv)
