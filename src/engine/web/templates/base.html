@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Trading Engine{% endblock %}</title>
+
+  <!-- Pico.css (dark mode nativo) -->
+  <link rel="stylesheet" href="/static/pico.min.css">
+
+  <!-- HTMX (interatividade sem JS) -->
+  <script src="/static/htmx.min.js"></script>
+
+  <style>
+    /* Ajustes finos */
+    :root {
+      --pico-font-size: 15px;
+    }
+    header nav {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+    }
+    header nav strong {
+      font-size: 1.2rem;
+      margin-right: 1rem;
+    }
+    header nav a {
+      text-decoration: none;
+      padding: 0.5rem 0.75rem;
+      border-radius: 0.25rem;
+    }
+    header nav a:hover {
+      background: var(--pico-primary-background);
+      color: var(--pico-primary-inverse);
+    }
+    .card {
+      padding: 1rem;
+      border-radius: 0.5rem;
+      background: var(--pico-card-background-color);
+      border: 1px solid var(--pico-card-border-color);
+      margin-bottom: 1rem;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+    .metric {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.25rem 0;
+    }
+    .metric-label {
+      color: var(--pico-muted-color);
+    }
+    .metric-value {
+      font-weight: bold;
+    }
+    .status-ok { color: #2ecc71; }
+    .status-warn { color: #f39c12; }
+    .status-error { color: #e74c3c; }
+    table {
+      font-size: 0.9rem;
+    }
+    .htmx-indicator {
+      opacity: 0;
+      transition: opacity 200ms;
+    }
+    .htmx-request .htmx-indicator {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header com navegação -->
+  <header class="container">
+    <nav>
+      <strong>Trading Engine</strong>
+      <a href="/">Dashboard</a>
+      <a href="/config">Config</a>
+      <a href="/backtest">Backtest</a>
+      <a href="/shadow">Shadow</a>
+    </nav>
+  </header>
+
+  <!-- Conteúdo da página -->
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Footer -->
+  <footer class="container">
+    <small>
+      Trading Engine v0.1.0 &mdash;
+      <a href="https://github.com/RenanMatosL/trading-engine" target="_blank">GitHub</a>
+    </small>
+  </footer>
+</body>
+</html>
