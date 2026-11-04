@@ -335,6 +335,8 @@ def run_simulation(
     *,
     session: TradingSession | None = None,
     initial_balance: float = 100_000.0,
+    slippage_points: float = 0.0,
+    spread_points: float = 0.0,
 ) -> SimulationResult:
     """Roda a simulação completa.
 
@@ -349,7 +351,12 @@ def run_simulation(
       no final: force_close_at_end_of_day se ainda houver trade
     """
     sess = session or TradingSession(preset)
-    executor = SimulatedExecutor(preset, initial_balance=initial_balance)
+    executor = SimulatedExecutor(
+        preset,
+        initial_balance=initial_balance,
+        slippage_points=slippage_points,
+        spread_points=spread_points,
+    )
 
     last_tick: MarketSnapshot | None = None
     last_open_state = False
@@ -370,12 +377,11 @@ def run_simulation(
             # Notifica sessão quando um trade transiciona aberto→fechado
             now_open = executor.open_trade is not None
             if last_open_state and not now_open:
-                # Um trade fechou: verificar motivo para notificar SL
                 last_trade = executor.trades[-1] if executor.trades else None
                 if last_trade is not None:
                     if last_trade.exit_reason == ExitReason.STOP_LOSS:
                         sess.notify_stop_loss(snapshot.now)
-                    sess.notify_trade_opened(snapshot.now)  # contador de trades
+                    sess.notify_trade_opened(snapshot.now)
             last_open_state = now_open
 
             # Fim do dia: fecha posição aberta

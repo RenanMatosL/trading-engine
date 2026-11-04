@@ -33,6 +33,8 @@ from engine.application.intent import ReentryIntent
 from engine.application.trade_events import ReentryFilled
 from engine.application.registry import StrategyRegistry
 from engine.domain.strategy.strategy import StrategyConfig
+from engine.application.backtester import Backtester
+from engine.infrastructure.data.csv_loader import load_bars_csv
 
 log = structlog.get_logger()
 
@@ -515,6 +517,126 @@ def cmd_shadow(args: argparse.Namespace, settings: EngineSettings) -> int:
     )
     return 0
 
+def cmd_backtest(args: argparse.Namespace, settings: EngineSettings) -> int:
+    """Roda backtest sobre um CSV de candles (F6).
+
+    Uso:
+        engine backtest --csv PATH [--preset PATH] [--slippage N] [--spread N]
+    """
+    from datetime import datetime as _dt
+
+    # Carrega preset
+    preset = load_preset(args.preset or settings.preset)
+
+    # Carrega CSV
+    csv_path = args.csv
+    if not csv_path:
+        log.error("backtest_csv_obrigatorio")
+        return 2
+    try:
+        bars = load_bars_csv(csv_path)
+    except (FileNotFoundError, ValueError) as exc:
+        log.error("backtest_csv_falhou", erro=str(exc))
+        return 2
+
+    if not bars:
+        log.error("backtest_csv_vazio")
+        return 2
+
+    # Filtra por data (opcional)
+    if args.from_date:
+        try:
+            dt_from = _dt.fromisoformat(args.from_date).replace(tzinfo=bars[0].time.tzinfo)
+        except ValueError as exc:
+            log.error("backtest_from_invalido", erro=str(exc))
+            return 2
+        bars = [b for b in bars if b.time >= dt_from]
+
+    if args.to_date:
+        try:
+            dt_to = _dt.fromisoformat(args.to_date).replace(tzinfo=bars[0].time.tzinfo)
+        except ValueError as exc:
+            log.error("backtest_to_invalido", erro=str(exc))
+            return 2
+        bars = [b for b in bars if b.time <= dt_to]
+
+    if not bars:
+        log.error("backtest_sem_barras_no_periodo")
+        return 2
+
+    # Roda backtest
+    bt = Backtester(
+        preset,
+        initial_balance=args.initial_balance,
+        slippage_points=args.slippage,
+        spread_points=args.spread,
+    )
+    result = bt.run(bars)
+
+    # Log resumido
+    stats = result.simulation.stats
+    log.info(
+        "backtest_result",
+        preset=preset.name,
+        n_bars=result.n_bars,
+        start=result.start.isoformat(),
+        end=result.end.isoformat(),
+        n_trades=stats.get("n_trades", 0),
+        winners=stats.get("winners", 0),
+        losers=stats.get("losers", 0),
+        win_rate=round(stats.get("win_rate", 0.0), 4),
+        total_pnl=round(stats.get("total_pnl_money", 0.0), 2),
+        return_pct=round(stats.get("return_pct", 0.0), 2),
+        sharpe=round(result.metrics["sharpe"], 4),
+        max_drawdown_pct=round(result.metrics["max_drawdown_pct"], 2),
+        profit_factor=(
+            "inf" if result.metrics["profit_factor"] == float("inf")
+            else round(result.metrics["profit_factor"], 4)
+        ),
+    )
+
+    # Exporta trades + equity (opcional)
+    if args.output:
+        import json
+        from pathlib import Path
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "preset": preset.name,
+            "start": result.start.isoformat(),
+            "end": result.end.isoformat(),
+            "n_bars": result.n_bars,
+            "n_trades": len(result.simulation.trades),
+            "stats": result.simulation.stats,
+            "metrics": {
+                k: ("inf" if v == float("inf") else v)
+                for k, v in result.metrics.items()
+            },
+            "trades": [
+                {
+                    "region_bar_time": t.region_bar_time.isoformat(),
+                    "is_buy": t.is_buy,
+                    "entry_time": t.entry_time.isoformat(),
+                    "entry_price": t.entry_price,
+                    "stop_loss": t.stop_loss,
+                    "take_profit": t.take_profit,
+                    "initial_volume": t.initial_volume,
+                    "pnl_points": t.pnl_points,
+                    "pnl_money": t.pnl_money,
+                    "exit_reason": t.exit_reason.value,
+                }
+                for t in result.simulation.trades
+            ],
+            "equity_curve": [
+                (ts.isoformat(), bal)
+                for ts, bal in result.simulation.equity_curve
+            ],
+        }
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        log.info("backtest_output_salvo", path=str(out))
+
+    return 0
+
 
 #+------------------------------------------------------------------+
 #| Main                                                             |
@@ -552,6 +674,23 @@ def main(argv: list[str] | None = None) -> int:
     p_shadow.add_argument("--db", default="engine_shadow.db")
     p_shadow.add_argument("--preset", default=None)
 
+    p_backtest = sub.add_parser("backtest", help="Roda backtest sobre CSV (F6)")
+    p_backtest.add_argument("--csv", required=True,
+                            help="Caminho do CSV de candles")
+    p_backtest.add_argument("--preset", default=None)
+    p_backtest.add_argument("--from-date", default=None,
+                            help="Filtra candles a partir de YYYY-MM-DD")
+    p_backtest.add_argument("--to-date", default=None,
+                            help="Filtra candles até YYYY-MM-DD")
+    p_backtest.add_argument("--initial-balance", type=float, default=100_000.0,
+                            help="Saldo inicial (default: 100000)")
+    p_backtest.add_argument("--slippage", type=float, default=0.0,
+                            help="Slippage em pontos (default: 0)")
+    p_backtest.add_argument("--spread", type=float, default=0.0,
+                            help="Spread em pontos (default: 0)")
+    p_backtest.add_argument("--output", default=None,
+                            help="Salva resultado em JSON (opcional)")
+
     sub.add_parser("version", help="Versao do motor")
 
     args = parser.parse_args(argv)
@@ -567,6 +706,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_check_config(args, settings)
     if args.cmd == "run":
         return cmd_run(args, settings)
+    if args.cmd == "backtest":
+        return cmd_backtest(args, settings)
     if args.cmd == "shadow":
         return cmd_shadow(args, settings)
     return 1
