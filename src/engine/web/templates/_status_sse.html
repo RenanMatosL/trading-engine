@@ -1,0 +1,79 @@
+{# Partial de status (F7f) — renderizado por SSE (HTML via HTMX). #}
+
+{% if engine_status == "no_mt5" %}
+  <article class="card" style="border-color: #e74c3c;">
+    <strong class="status-error">⚠️ MT5 indisponível:</strong> {{ error }}
+  </article>
+{% elif engine_status == "error" %}
+  <article class="card" style="border-color: #e74c3c;">
+    <strong class="status-error">✗ Erro:</strong> {{ error }}
+  </article>
+{% else %}
+  <div class="grid-3">
+    <div class="card">
+      <h3>Conta</h3>
+      <div class="metric">
+        <span class="metric-label">Login</span>
+        <span class="metric-value">{{ account.login }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Servidor</span>
+        <span class="metric-value">{{ account.server }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Saldo</span>
+        <span class="metric-value">{{ "%.2f" | format(account.balance) }} {{ account.currency }}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Símbolo</h3>
+      <div class="metric">
+        <span class="metric-label">Símbolo</span>
+        <span class="metric-value">{{ symbol }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Candles</span>
+        <span class="metric-value">{{ bars_loaded }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Último</span>
+        <span class="metric-value">{{ last_bar_time }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Fechamento</span>
+        <span class="metric-value">{{ "%.2f" | format(last_close) }}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Detector</h3>
+      {% if detector %}
+        <div class="metric">
+          <span class="metric-label">Z-score</span>
+          <span class="metric-value">
+            {% if detector.is_signal %}
+              <span class="status-ok">{{ "%.2f" | format(detector.zscore) }}</span>
+            {% else %}
+              {{ "%.2f" | format(detector.zscore) }}
+            {% endif %}
+          </span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Média</span>
+          <span class="metric-value">{{ "%.2f" | format(detector.mean) }}</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Desvio</span>
+          <span class="metric-value">{{ "%.2f" | format(detector.std) }}</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Volume</span>
+          <span class="metric-value">{{ "%.2f" | format(detector.volume) }}</span>
+        </div>
+      {% else %}
+        <p>Sem leitura do detector.</p>
+      {% endif %}
+    </div>
+  </div>
+{% endif %}

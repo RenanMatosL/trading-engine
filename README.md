@@ -4,7 +4,7 @@ Porte da estratégia **StdDevVolumeBreakout v4.60** para Python (API oficial
 MetaTrader5), arquitetado em DDD/bounded contexts para múltiplas estratégias
 plugáveis. Plano completo: `Plano_Motor_Trading_Python.md`.
 
-**Estado atual:** **F0 → F6 + F7a → F7e concluídos.** O motor **detecta**
+**Estado atual:** **F0 → F6 + F7a → F7f concluídos.** O motor **detecta**
 sinais (paridade bit-a-bit com o EA), **gerencia** regiões, **orquestra**
 sessão, **simula** trades, **executa** ordens (real + fake), **reage** a
 fills/SL/TP, **persiste** estado em SQLite, **roda em loop** real, **compara**
@@ -13,9 +13,8 @@ decisões com o EA em tempo real (modo sombra), **opera com parciais**
 entrada, **gerencia validade de regiões por pregões reais** (calendário B3),
 **suporta slippage/spread no simulador**, **suporta multi-estratégia** (N sessões
 por tick), **roda backtest próprio** (sem MT5, com métricas), e tem **frontend
-web** completo (FastAPI + HTMX + Pico + uPlot) com **dashboard** (status +
-equity + trades), **config** (edição de preset), **backtest** (upload CSV e resultado) e **shadow** (comparação read-only com o EA).
-**F7f (SSE no frontend) é o próximo passo.**
+web** completo (FastAPI + HTMX + Pico + uPlot) com **dashboard** (status em tempo real via SSE + equity + trades), **config** (edição de preset), **backtest** (upload CSV e resultado) e **shadow** (comparação read-only com o EA).
+**F7g (testes de cobertura do frontend) é o próximo passo.**
 
 ---
 
@@ -38,7 +37,7 @@ uv run engine run --demo --db engine_demo.db        # loop real em demo
 uv run engine shadow --ea-magic 20260718 --duration 60   # modo sombra
 uv run engine backtest --csv tests/fixtures/sample_bars.csv   # backtest
 uv run uvicorn engine.web.app:app --reload --port 8000   # frontend
-uv run pytest -q                  # suíte completa (~231 testes)
+uv run pytest -q                  # suíte completa (~232 testes)
 Linux/macOS (desenvolvimento sem MT5): uv pip install -e ".[dev]" e usar --fake.
 
 Frontend: abra http://localhost:8000 no navegador (com o uvicorn rodando).
@@ -100,7 +99,7 @@ src/engine/
 │
 ├── web/                             # Frontend (F7a+)
 │   ├── __init__.py
-│   ├── app.py                       # FastAPI app + rotas (F7a + F7c + F7d + F7e)
+│   ├── app.py                       # FastAPI app + rotas (F7a + F7c + F7d + F7e + F7f)
 │   ├── deps.py                      # dependências (gateway, settings) (F7a)
 │   ├── schemas.py                   # Pydantic (request/response)
 │   ├── routes/
@@ -108,11 +107,13 @@ src/engine/
 │   │   ├── equity.py                # GET /api/equity (F7b-2)
 │   │   ├── preset.py                # GET/POST /api/preset (F7c)
 │   │   ├── backtest.py              # GET/POST /api/backtest (F7d)
-│   │   └── shadow.py                # GET/POST /api/shadow (F7e)
+│   │   ├── shadow.py                # GET/POST /api/shadow (F7e)
+│   │   └── stream.py                # GET /stream (SSE) (F7f)
 │   ├── templates/
-│   │   ├── base.html                # layout + HTMX + Pico + uPlot + json-enc
-│   │   ├── dashboard.html           # página principal (F7a + F7b-2)
-│   │   ├── _status.html             # partial (status) (F7a)
+│   │   ├── base.html                # layout + HTMX + Pico + uPlot + json-enc + sse
+│   │   ├── dashboard.html           # página principal (F7a + F7b-2 + F7f)
+│   │   ├── _status.html             # partial (status p/ polling antigo) (F7a)
+│   │   ├── _status_sse.html         # partial (status via SSE) (F7f)
 │   │   ├── _trades.html             # partial (trades) (F7b-2)
 │   │   ├── _equity.html             # partial (equity, uPlot) (F7b-2)
 │   │   ├── config.html              # página de config (F7c)
@@ -125,7 +126,8 @@ src/engine/
 │       ├── htmx.min.js              # 48 KB
 │       ├── pico.min.css             # 83 KB
 │       ├── uplot.min.js             # 50 KB
-│       └── uplot.min.css            # 1.9 KB
+│       ├── uplot.min.css            # 1.9 KB
+│       └── sse.js                   # 10 KB (F7f)
 │
 └── cli.py                           # engine status | check-config | run | shadow |
                                      #   backtest | version
@@ -154,7 +156,7 @@ tests/
 ├── test_csv_loader.py               # load_bars_csv (F6)
 ├── test_metrics.py                  # métricas (F6)
 ├── test_backtester.py               # Backtester (F6)
-└── test_web.py                      # 16 testes (F7b-2 + F7c + F7d + F7e)
+└── test_web.py                      # 17 testes (F7b-2 + F7c + F7d + F7e + F7f)
 Fases concluídas
 F0 ✔ — Esqueleto
 CLI (engine status | check-config | version)
@@ -326,6 +328,15 @@ _shadow.html (formulário + card verde com Match Rate + tabela de divergências)
 
 Uso de _ShadowTrade (duck typing) para evitar dependência de TradeIntent inteiro
 
+F7f ✔ — SSE (status em tempo real)
+GET /stream → StreamingResponse (text/event-stream)
+
+Dashboard consome via hx-ext="sse" sse-connect="/stream" sse-swap="message"
+
+Partial _status_sse.html renderizado no backend e empurrado via SSE
+
+Loop encerra quando o cliente desconecta (Request.is_disconnected())
+
 Decisões de arquitetura (registradas)
 Tema	Decisão
 Config	Pydantic 2 + pydantic-settings (.env); Pulumi adiado até deploy em nuvem
@@ -354,6 +365,7 @@ Trades no dashboard (F7b-1)	SQLite (engine.db, tabela trades); persiste sem MT5
 Config (F7c)	Formulário com hx-ext="json-enc"; backup .bak antes de salvar
 Backtest (F7d)	Multipart upload (hx-encoding); Backtester síncrono e read-only
 Shadow (F7e)	Read-only (ShadowComparer); não coloca ordens; usa duck typing
+SSE (F7f)	StreamingResponse + hx-ext="sse"; partial _status_sse.html
 Roadmap
 Fase	Descrição	Status
 F0	Esqueleto (CLI, config, ACL, fake)	✔
@@ -380,12 +392,12 @@ F7b-2	Dashboard com equity curve (uPlot) + tabela de trades	✔
 F7c	Config (edição de preset via formulário)	✔
 F7d	Backtest (upload CSV + resultado)	✔
 F7e	Shadow (rodar + resultado)	✔
-F7f	SSE (status em tempo real)	⏳ próximo
-F7g	Testes (TestClient do FastAPI)	⏳ pendente
+F7f	SSE (status em tempo real no dashboard)	✔
+F7g	Testes (cobertura completa do TestClient)	⏳ próximo
 F8+	Validação em demo, parciais/reforço no simulador, multi-símbolo, observabilidade	⏳ opcional
 Suíte de testes
 powershell
-uv run pytest -q                              # ~231 testes
+uv run pytest -q                              # ~232 testes
 uv run pytest -v                              # verbose
 uv run pytest tests/test_golden_v510.py -v    # só paridade do detector
 uv run pytest tests/test_calendar.py -v       # calendário B3 (F5d)
@@ -398,7 +410,7 @@ uv run pytest tests/test_registry.py -v       # multi-estratégia (F5f)
 uv run pytest tests/test_csv_loader.py -v     # CSV loader (F6)
 uv run pytest tests/test_metrics.py -v        # métricas (F6)
 uv run pytest tests/test_backtester.py -v     # Backtester (F6)
-uv run pytest tests/test_web.py -v            # frontend (F7b-2 a F7e)
+uv run pytest tests/test_web.py -v            # frontend (F7b-2 a F7f)
 Comandos úteis (CLI + Frontend)
 powershell
 # Backend (CLI)
@@ -414,7 +426,7 @@ uv run engine backtest --csv PATH                  # backtest (F6)
 
 # Frontend
 uv run uvicorn engine.web.app:app --reload --port 8000   # servidor web
-# Abrir: http://localhost:8000          (dashboard)
+# Abrir: http://localhost:8000          (dashboard, com SSE)
 #        http://localhost:8000/config   (config)
 #        http://localhost:8000/backtest (backtest)
 #        http://localhost:8000/shadow   (shadow - read only)
@@ -429,6 +441,6 @@ Fixture real: tests/fixtures/v510_expected.csv (679 candles WIN$N M1, 29/10/2026
 
 Plano completo: Plano_Motor_Trading_Python.md
 
-Guia de retomada backend: ai.md
+Guia único de retomada: AI.md (backend + frontend)
 
-Guia de retomada frontend: ai_front_end.md
+Manual de uso: MANUAL.md (passo a passo de operação)

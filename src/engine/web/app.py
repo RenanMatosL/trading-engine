@@ -178,36 +178,14 @@ from engine.web.routes import equity as equity_routes
 from engine.web.routes import trades as trades_routes
 from engine.web.routes import preset as preset_routes
 from engine.web.routes import backtest as backtest_routes
-from engine.web.routes import shadow as shadow_routes  
+from engine.web.routes import shadow as shadow_routes 
+from engine.web.routes import stream as stream_routes 
+
 
 app.include_router(trades_routes.router)
 app.include_router(equity_routes.router)
 app.include_router(preset_routes.router)  
 app.include_router(backtest_routes.router)
-app.include_router(shadow_routes.router)               
+app.include_router(shadow_routes.router)
+app.include_router(stream_routes.router)                  
 
-#+------------------------------------------------------------------+
-#| F7e — /shadow                                                   |
-#+------------------------------------------------------------------+
-def test_shadow_page(client, preset_file):
-    """GET /shadow renderiza a página."""
-    r = client.get("/shadow")
-    assert r.status_code == 200
-    assert "Shadow" in r.text
-
-
-def test_api_shadow_get(client, preset_file):
-    """GET /api/shadow retorna o partial com o form."""
-    r = client.get("/api/shadow")
-    assert r.status_code == 200
-    assert 'hx-post="/api/shadow"' in r.text
-
-
-def test_api_shadow_post_invalid(client, preset_file):
-    """POST /api/shadow com ea_magic inválido → 400."""
-    r = client.post(
-        "/api/shadow",
-        data={"ea_magic": "0", "py_magic": "1", "duration_min": "60"},
-    )
-    assert r.status_code == 400
-    assert "error" in r.json()

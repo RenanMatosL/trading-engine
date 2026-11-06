@@ -287,3 +287,12 @@ def test_api_shadow_post_invalid(client, preset_file):
     )
     assert r.status_code == 400
     assert "error" in r.json()
+
+#+------------------------------------------------------------------+
+#| F7f — /stream (SSE)                                             |
+#+------------------------------------------------------------------+
+def test_stream_endpoint(client, preset_file):
+    """GET /stream retorna 200 + content-type text/event-stream."""
+    with client.stream("GET", "/stream") as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")

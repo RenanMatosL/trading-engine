@@ -1,4 +1,4 @@
-# AI.md — Guia de Retomada do Projeto Trading Engine
+# AI.md — Guia Único de Retomada do Projeto Trading Engine
 
 > **Propósito deste arquivo:** permitir que uma IA (ou o autor) retome o projeto
 > em outro chat/sessão **sem contexto anterior**, saiba **exatamente** onde
@@ -7,8 +7,8 @@
 > **Leia este arquivo INTEIRO antes de escrever qualquer linha de código.**
 > Ele evita retrabalho, decisões já tomadas e bugs conhecidos.
 >
-> **Este arquivo cobre o backend e visão geral.** Para o frontend (FastAPI,
-> HTMX, templates), leia o `ai_front_end.md`.
+> **Este é o único guia do projeto (Backend + Frontend).** Ele substitui o
+> antigo `ai_front_end.md` para ser a fonte única da verdade.
 
 ---
 
@@ -20,7 +20,8 @@ oficial **MetaTrader5** (pacote `MetaTrader5` pip, só Windows). Arquitetura
 
 **Objetivo final:** motor multi-estratégia, hoje focado em UMA estratégia
 (`stddev_v510`), com paridade bit-a-bit com o EA original, capaz de operar em
-conta demo/real via MT5 e comparar resultado com o Strategy Tester do MT5.
+conta demo/real via MT5, comparar resultado com o Strategy Tester do MT5 e ter
+uma interface web visual e leve.
 
 **Estratégia (resumo):**
 1. Calcula z-score do volume em janela de `InpLen=180` candles M1 fechados.
@@ -35,7 +36,7 @@ conta demo/real via MT5 e comparar resultado com o Strategy Tester do MT5.
 9. **Validade por pregões reais** (calendário B3, feriados 2026-2027).
 10. **Multi-estratégia** (N sessões por tick, cada uma com seu magic).
 11. **Backtester próprio** (sem MT5, com slippage/spread e métricas).
-12. **Interface Web (F7)** (FastAPI + HTMX + Pico CSS) para monitoramento e backtests.
+12. **Interface Web (F7)** (FastAPI + HTMX + Pico CSS) para monitoramento, backtests, configuração e atualização em tempo real (SSE).
 
 ---
 
@@ -67,9 +68,10 @@ conta demo/real via MT5 e comparar resultado com o Strategy Tester do MT5.
 | **F7c** | Frontend: Config (edição de preset via formulário) | ✅ fechado |
 | **F7d** | Frontend: Backtest (upload CSV + resultado) | ✅ fechado |
 | **F7e** | Frontend: Shadow (comparar EA vs Python) | ✅ fechado |
+| **F7f** | Frontend: SSE (status em tempo real) | ✅ fechado |
 
-**Suíte de testes atual:** **231 passed** (`uv run pytest -q`).
-**Projeto completo (F0→F6 + F7a→F7e).** Próximas fases: F7f (SSE), F7g (testes web adicionais) e F8+ (melhorias no motor).
+**Suíte de testes atual:** **232 passed** (`uv run pytest -q`).
+**Projeto completo (F0→F6 + F7a→F7f).**
 
 ---
 
@@ -133,9 +135,9 @@ src/engine/
 │ ├── app.py # App + rotas HTML + API
 │ ├── deps.py # gateway, settings
 │ ├── schemas.py # Pydantic schemas
-│ ├── routes/ # Routers (trades, equity, preset, backtest, shadow)
+│ ├── routes/ # Routers (trades, equity, preset, backtest, shadow, stream)
 │ ├── templates/ # base.html, dashboard.html, partials _*.html
-│ └── static/ # htmx, pico, uplot
+│ └── static/ # htmx, pico, uplot, sse
 │
 └── cli.py # engine status | check-config | run | shadow |
 
@@ -165,7 +167,7 @@ tests/
 ├── test_csv_loader.py # load_bars_csv (F6)
 ├── test_metrics.py # métricas (F6)
 ├── test_backtester.py # Backtester (F6)
-└── test_web.py # TestClient FastAPI (F7b-2 a F7e) — 16 testes
+└── test_web.py # TestClient FastAPI (F7a-F7f) — 17 testes
 
 text
 
@@ -173,7 +175,7 @@ text
 
 ## 4. Decisões de arquitetura (NÃO MUDE SEM MOTIVO FORTE)
 
-### Domínio puro
+### Domínio puro (Backend)
 - `domain/` **não importa** MT5, pydantic, structlog, nem nada externo.
 - `MarketSnapshot` em `domain/shared/types.py` é a "foto do mercado" no tick.
 - `Bar` representa candle **fechado** (nunca em formação).
@@ -350,23 +352,13 @@ text
 - **HTMX JSON:** formulários com `hx-ext="json-enc"` (config).
 - **HTMX multipart:** formulários de upload com `hx-encoding="multipart/form-data"` (backtest).
 - **Read-only:** `/shadow` (F7e) **só compara**, não coloca ordens (usa `ShadowComparer`, não `RealExecutor`).
+- **SSE:** `/stream` (F7f) usa `StreamingResponse` e HTMX `hx-ext="sse"`.
 
 ---
 
-## 5. Próximos passos (F7f / F7g / F8+)
+## 5. Próximos passos (F7g / F8+)
 
-O projeto **F0→F6 + F7a→F7e está 100% completo**. Próximas fases:
-
-### F7f — SSE (status em tempo real) — 2h
-
-**O que implementa:** `GET /stream` (SSE) + dashboard consumindo com `hx-ext="sse"`.
-
-**Arquivos:**
-- `src/engine/web/routes/stream.py` — `StreamingResponse(media_type="text/event-stream")`.
-- `src/engine/web/templates/dashboard.html` — `hx-ext="sse" sse-connect="/stream"`.
-- `tests/test_web.py` — teste de conexão SSE.
-
-**Critério:** dashboard atualiza sozinho a cada 2s (sem refresh manual).
+O projeto **F0→F6 + F7a→F7f está 100% completo**.
 
 ### F7g — Testes web (~10-15 testes)
 
@@ -419,7 +411,7 @@ O projeto **F0→F6 + F7a→F7e está 100% completo**. Próximas fases:
 
 ```powershell
 # Testes
-uv run pytest -q                              # suíte completa (231 passed hoje)
+uv run pytest -q                              # suíte completa (232 passed hoje)
 uv run pytest tests/test_golden_v510.py -v    # paridade do detector
 uv run pytest tests/test_calendar.py -v       # calendário B3
 uv run pytest tests/test_state.py -v          # persistência + parciais/reforço
@@ -431,7 +423,7 @@ uv run pytest tests/test_registry.py -v       # multi-estratégia
 uv run pytest tests/test_csv_loader.py -v     # CSV loader (F6)
 uv run pytest tests/test_metrics.py -v        # métricas (F6)
 uv run pytest tests/test_backtester.py -v     # Backtester (F6)
-uv run pytest tests/test_web.py -v            # FastAPI web (F7a-F7e)
+uv run pytest tests/test_web.py -v            # FastAPI web (F7a-F7f)
 
 # Frontend
 uv run uvicorn engine.web.app:app --reload --port 8000
@@ -450,16 +442,16 @@ uv run engine backtest --csv PATH --output result.json        # backtest com JSO
 
 # Git
 git add -A
-git commit -m "feat(F7e): shadow web (231 passed)"
+git commit -m "feat(F7f): SSE web (232 passed)"
 7. Como o próximo agente deve começar
 Passo 1 — Confirmar estado atual:
 
 powershell
 uv run pytest -q
-Deve mostrar 231 passed. Se não, PARE e investigue o que quebrou.
+Deve mostrar 232 passed. Se não, PARE e investigue o que quebrou.
 
 Passo 2 — Ler este AI.md inteiro. Principalmente seções 4 (decisões) e
-5 (próximos passos F7f+). Para frontend, leia o ai_front_end.md.
+5 (próximos passos F7g+).
 
 Passo 3 — Rodar uv run engine check-config para confirmar que o preset
 carrega (7 seções no log).
@@ -471,7 +463,7 @@ Passo 5 — Subir o frontend:
 
 powershell
 uv run uvicorn engine.web.app:app --reload --port 8000
-Abra http://localhost:8000 → dashboard deve carregar.
+Abra http://localhost:8000 → dashboard deve carregar (com SSE).
 Abra http://localhost:8000/backtest → form deve carregar.
 Abra http://localhost:8000/shadow → aviso vermelho + form devem carregar.
 
@@ -572,7 +564,7 @@ HTMX JSON: hx-ext="json-enc" para formulários de config.
 
 TradeIntent no routes/shadow.py: usar _ShadowTrade (duck typing) em vez de TradeIntent inteiro.
 
-SSE (F7f): StreamingResponse(media_type="text/event-stream") é obrigatório.
+SSE (F7f): StreamingResponse(media_type="text/event-stream") é obrigatório. Se o uvicorn travar no Ctrl+C, feche a aba do navegador antes.
 
 TestClient: with TestClient(app) as client: dispara o lifespan.
 
@@ -590,11 +582,11 @@ Plano completo: Plano_Motor_Trading_Python.md (se existir no repo).
 
 README: README.md na raiz (documenta estado atual + roadmap).
 
-Frontend: ai_front_end.md (FastAPI, HTMX, templates, SSE).
+Manual de uso: MANUAL.md (passo a passo de operação).
 
 10. Regras de ouro (para a IA que continuar)
 Rode uv run pytest -q antes e depois de CADA mudança. Se quebrar,
-reverta imediatamente. (Hoje: 231 passed.)
+reverta imediatamente. (Hoje: 232 passed.)
 
 Nunca substitua arquivo inteiro sem antes dar uma olhada na versão atual.
 O problema mais comum no histórico do projeto foi colar código novo em cima
@@ -642,10 +634,31 @@ gambiarra. F8+ transforma em @staticmethod.
 
 Multi-estratégia: --strategies usa preset.strategy (não preset.name).
 
-Frontend: para detalhes de HTMX, templates, rotas e SSE, leia o
-ai_front_end.md. O app.py e os routers nunca duplicam lógica do
-backend — só chamam engine.application.*.
+Nunca duplique lógica do backend. O app.py e os routers da web
+nunca reimplementam cálculo — só chamam engine.application.* e
+engine.infrastructure.*.
 
-F0→F6 + F7a→F7e está 100% completo. Próximas fases: F7f (SSE),
-F7g (testes web), F8 (parciais/reforço no simulador), F9 (estratégias
-adicionais), F10 (multi-símbolo), F11 (observabilidade).
+Não exponha engine.db nem .env no navegador. O frontend só vê JSON
+público (ou HTML via HTMX/SSE).
+
+Formulários HTMX usam hx-ext="json-enc" (config) ou
+hx-encoding="multipart/form-data" (upload). SSE usa hx-ext="sse".
+
+TestClient precisa de with TestClient(app) as client: para disparar o
+lifespan (startup/shutdown).
+
+Backup de preset: o POST /api/preset copia o YAML atual para .bak
+antes de salvar.
+
+Padrão de template: partials começam com _ (_status.html,
+_backtest.html, _shadow.html, _status_sse.html); páginas não
+(dashboard.html, backtest.html, shadow.html).
+
+Código de teste NUNCA no app.py. Sempre em tests/test_web.py.
+
+SSE: o servidor segura a conexão. Se for parar o uvicorn, feche a aba
+do navegador antes do Ctrl+C. O formato do frame é data: <linha>\n\n.
+
+F0→F6 + F7a→F7f está 100% completo. Próximas fases: F7g (testes web),
+F8 (parciais/reforço no simulador), F9 (estratégias adicionais), F10
+(multi-símbolo), F11 (observabilidade).
