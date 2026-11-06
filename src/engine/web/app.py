@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI):
 
     settings = EngineSettings()
     app.state.settings = settings
+    app.state.db_path = "engine.db"
     app.state.gateway = await startup_gateway(settings)
     try:
         yield
@@ -135,3 +136,12 @@ async def api_status(request: Request):
 if _STATIC_DIR.exists():
     from fastapi.staticfiles import StaticFiles
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+#+------------------------------------------------------------------+
+#| Routers (F7b-2)                                                  |
+#+------------------------------------------------------------------+
+from engine.web.routes import equity as equity_routes
+from engine.web.routes import trades as trades_routes
+
+app.include_router(trades_routes.router)
+app.include_router(equity_routes.router)

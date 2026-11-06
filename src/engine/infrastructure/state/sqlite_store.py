@@ -1,10 +1,4 @@
-"""StateStore SQLite — persistência em disco (F3c).
-
-Schema criado automaticamente no `__init__` (CREATE TABLE IF NOT EXISTS).
-Datas em ISO 8601 UTC. Enum `RegionPhase` serializado como string.
-
-Não usa ORM: só `sqlite3` da stdlib. Simples, rápido, sem dependência extra.
-"""
+"""StateStore SQLite — persistência em disco (F3c + F5e + F7b-1)."""
 from __future__ import annotations
 
 import json
@@ -12,7 +6,11 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from engine.domain.state.store import SessionSnapshot, StateStore
+from engine.domain.state.store import (
+    SessionSnapshot,
+    StateStore,
+    TradeRecord,
+)
 from engine.domain.strategy.location import (
     RegionPhase,
     RegionState,
@@ -40,6 +38,25 @@ CREATE TABLE IF NOT EXISTS regions (
     broken_time TEXT,
     rearmed_once INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    region_bar_time TEXT NOT NULL,
+    is_buy INTEGER NOT NULL,
+    entry_time TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    exit_time TEXT NOT NULL,
+    exit_price REAL NOT NULL,
+    stop_loss REAL NOT NULL,
+    take_profit REAL NOT NULL,
+    initial_volume REAL NOT NULL,
+    pnl_points REAL NOT NULL,
+    pnl_money REAL NOT NULL,
+    exit_reason TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trades_exit_time ON trades(exit_time);
 """
 
 
@@ -70,9 +87,7 @@ class SqliteStateStore:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
-    # ----------------------------------------------------------------
-    # Session state (key/value JSON)
-    # ----------------------------------------------------------------
+    # --- Session ---
     def save_session(self, snapshot: SessionSnapshot) -> None:
         payload = {
             "last_sl_time": _dt_to_iso(snapshot.last_sl_time),
@@ -80,7 +95,6 @@ class SqliteStateStore:
             "current_day": _dt_to_iso(snapshot.current_day),
             "current_entry_region": _dt_to_iso(snapshot.current_entry_region),
             "current_entry_position": snapshot.current_entry_position,
-            # F5e
             "current_entry_price": snapshot.current_entry_price,
             "current_is_buy": snapshot.current_is_buy,
             "reentry_armed": snapshot.reentry_armed,
@@ -108,7 +122,6 @@ class SqliteStateStore:
             current_day=_iso_to_dt(payload.get("current_day")),
             current_entry_region=_iso_to_dt(payload.get("current_entry_region")),
             current_entry_position=payload.get("current_entry_position"),
-            # F5e
             current_entry_price=payload.get("current_entry_price"),
             current_is_buy=payload.get("current_is_buy"),
             reentry_armed=bool(payload.get("reentry_armed", False)),
@@ -116,12 +129,8 @@ class SqliteStateStore:
             partials_filled=tuple(payload.get("partials_filled", [])),
         )
 
-    # ----------------------------------------------------------------
-    # Regions
-    # ----------------------------------------------------------------
+    # --- Regions ---
     def save_regions(self, regions: list[RegionState]) -> None:
-        # Simplest strategy: DELETE + INSERT (idempotente).
-        # Em F5, se ficar caro, vira diff.
         self._conn.execute("DELETE FROM regions")
         for r in regions:
             self._conn.execute(
@@ -172,10 +181,83 @@ class SqliteStateStore:
             )
         return out
 
-    # ----------------------------------------------------------------
+    # --- Trades (F7b-1) ---
+    def save_trade(self, trade: TradeRecord) -> int:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        cur = self._conn.execute(
+            "INSERT INTO trades "
+            "(region_bar_time, is_buy, entry_time, entry_price, exit_time, "
+            " exit_price, stop_loss, take_profit, initial_volume, "
+            " pnl_points, pnl_money, exit_reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _dt_to_iso(trade.region_bar_time),
+                int(trade.is_buy),
+                _dt_to_iso(trade.entry_time),
+                trade.entry_price,
+                _dt_to_iso(trade.exit_time),
+                trade.exit_price,
+                trade.stop_loss,
+                trade.take_profit,
+                trade.initial_volume,
+                trade.pnl_points,
+                trade.pnl_money,
+                trade.exit_reason,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def list_trades(self, limit: int = 50) -> list[TradeRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM trades ORDER BY exit_time DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self._row_to_trade(r) for r in rows]
+
+    def list_equity(self, limit: int = 1000) -> list[tuple[datetime, float]]:
+        """Equity curve: PnL acumulado por trade (ordem cronológica)."""
+        rows = self._conn.execute(
+            "SELECT exit_time, pnl_money FROM trades "
+            "ORDER BY exit_time ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        if not rows:
+            return []
+        # Balance inicial = 100_000 (default) + PnL acumulado
+        balance = 100_000.0
+        curve: list[tuple[datetime, float]] = []
+        for r in rows:
+            exit_dt = _iso_to_dt(r["exit_time"])
+            if exit_dt is None:
+                continue
+            balance += float(r["pnl_money"])
+            curve.append((exit_dt, balance))
+        return curve
+
+    def _row_to_trade(self, row: sqlite3.Row) -> TradeRecord:
+        return TradeRecord(
+            id=int(row["id"]),
+            region_bar_time=_iso_to_dt(row["region_bar_time"]),  # type: ignore[arg-type]
+            is_buy=bool(row["is_buy"]),
+            entry_time=_iso_to_dt(row["entry_time"]),  # type: ignore[arg-type]
+            entry_price=float(row["entry_price"]),
+            exit_time=_iso_to_dt(row["exit_time"]),  # type: ignore[arg-type]
+            exit_price=float(row["exit_price"]),
+            stop_loss=float(row["stop_loss"]),
+            take_profit=float(row["take_profit"]),
+            initial_volume=float(row["initial_volume"]),
+            pnl_points=float(row["pnl_points"]),
+            pnl_money=float(row["pnl_money"]),
+            exit_reason=str(row["exit_reason"]),
+        )
+
+    # --- Clear ---
     def clear(self) -> None:
         self._conn.execute("DELETE FROM session_state")
         self._conn.execute("DELETE FROM regions")
+        self._conn.execute("DELETE FROM trades")
         self._conn.commit()
 
     def close(self) -> None:

@@ -314,3 +314,100 @@ def test_trading_session_calendar_default_b3():
     # (verificamos indiretamente pela validade por pregões)
     assert sess.regions._calendar is not None
     assert isinstance(sess.regions._calendar, B3Calendar)
+
+
+
+
+#+------------------------------------------------------------------+
+#| F7b-1 — Trades no SQLite                                        |
+#+------------------------------------------------------------------+
+def _mk_trade(
+    *,
+    pnl_money: float = 600.0,
+    is_buy: bool = True,
+    exit_reason: str = "take_profit",
+) -> "TradeRecord":
+    from engine.domain.state.store import TradeRecord
+    from datetime import datetime, timezone
+
+    t = datetime(2026, 10, 29, 9, 0, tzinfo=timezone.utc)
+    return TradeRecord(
+        id=None,
+        region_bar_time=t,
+        is_buy=is_buy,
+        entry_time=t,
+        entry_price=1100.0,
+        exit_time=t + __import__("datetime").timedelta(minutes=5),
+        exit_price=1700.0,
+        stop_loss=800.0,
+        take_profit=1700.0,
+        initial_volume=6.0,
+        pnl_points=600.0,
+        pnl_money=pnl_money,
+        exit_reason=exit_reason,
+    )
+
+
+def test_memory_store_save_trade_gera_id():
+    """save_trade retorna ID incremental."""
+    from engine.infrastructure.state.memory_store import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    id1 = store.save_trade(_mk_trade())
+    id2 = store.save_trade(_mk_trade(pnl_money=200.0))
+    assert id1 == 1
+    assert id2 == 2
+
+
+def test_memory_store_list_trades_recente_primeiro():
+    """list_trades retorna trade mais recente primeiro."""
+    from engine.infrastructure.state.memory_store import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    store.save_trade(_mk_trade(pnl_money=100.0))
+    store.save_trade(_mk_trade(pnl_money=200.0))
+
+    trades = store.list_trades()
+    assert len(trades) == 2
+    # Reverso (último primeiro)
+    assert trades[0].pnl_money == 200.0
+    assert trades[1].pnl_money == 100.0
+
+
+def test_sqlite_store_trade_round_trip(tmp_path):
+    """SQLite: save_trade → list_trades funciona."""
+    from engine.infrastructure.state.sqlite_store import SqliteStateStore
+
+    db = tmp_path / "test_trades.db"
+    store = SqliteStateStore(db)
+    try:
+        tid = store.save_trade(_mk_trade(pnl_money=1500.0, is_buy=False))
+        assert tid > 0
+
+        trades = store.list_trades(limit=10)
+        assert len(trades) == 1
+        assert trades[0].pnl_money == 1500.0
+        assert trades[0].is_buy is False
+        assert trades[0].exit_reason == "take_profit"
+        assert trades[0].id == tid
+    finally:
+        store.close()
+
+
+def test_sqlite_store_equity_curve(tmp_path):
+    """SQLite: list_equity retorna curva acumulada."""
+    from engine.infrastructure.state.sqlite_store import SqliteStateStore
+
+    db = tmp_path / "test_equity.db"
+    store = SqliteStateStore(db)
+    try:
+        store.save_trade(_mk_trade(pnl_money=100.0))
+        store.save_trade(_mk_trade(pnl_money=200.0))
+
+        curve = store.list_equity()
+        assert len(curve) == 2
+        # Balance inicial 100_000 + 100 = 100_100; depois + 200 = 100_300
+        assert curve[0][1] == 100_100.0
+        assert curve[1][1] == 100_300.0
+    finally:
+        store.close()

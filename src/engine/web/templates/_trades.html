@@ -1,0 +1,40 @@
+{#
+  Partial de trades (F7b-2). Renderizado por /api/trades (HTMX).
+#}
+
+{% if trades and trades|length > 0 %}
+<table>
+  <thead>
+    <tr>
+      <th>Exit</th>
+      <th>Dir</th>
+      <th>Entry</th>
+      <th>Exit</th>
+      <th>PnL</th>
+      <th>Motivo</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for t in trades %}
+    <tr>
+      <td>{{ t.exit_time[:16] }}</td>
+      <td>{{ "BUY" if t.is_buy else "SELL" }}</td>
+      <td>{{ "%.1f" | format(t.entry_price) }}</td>
+      <td>{{ "%.1f" | format(t.exit_price) }}</td>
+      <td>
+        {% if t.pnl_money > 0 %}
+          <span class="status-ok">+{{ "%.2f" | format(t.pnl_money) }}</span>
+        {% elif t.pnl_money < 0 %}
+          <span class="status-error">{{ "%.2f" | format(t.pnl_money) }}</span>
+        {% else %}
+          0.00
+        {% endif %}
+      </td>
+      <td>{{ t.exit_reason }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="status-warn">Nenhum trade registrado ainda.</p>
+{% endif %}

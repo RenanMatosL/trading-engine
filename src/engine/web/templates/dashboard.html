@@ -10,14 +10,31 @@
      hx-get="/api/status"
      hx-trigger="load, every 5s"
      hx-swap="innerHTML">
-  {% include "_status.html" %}
+  <article class="card"><p>Carregando status...</p></article>
 </div>
 
-<!-- Placeholder para futuras seções (F7b+) -->
+<!-- Equity curve (F7b-2) -->
+<div class="card"
+     hx-get="/api/equity"
+     hx-trigger="load, every 10s"
+     hx-swap="innerHTML">
+  <h3>Equity Curve</h3>
+  <article><p>Carregando equity...</p></article>
+</div>
+
+<!-- Tabela de trades (F7b-2) -->
+<div class="card"
+     hx-get="/api/trades?limit=20"
+     hx-trigger="load, every 10s"
+     hx-swap="innerHTML">
+  <h3>Últimos Trades</h3>
+  <article><p>Carregando trades...</p></article>
+</div>
+
+<!-- Placeholder para futuras seções -->
 <div class="card">
   <h3>Em breve</h3>
   <p>
-    <strong>F7b:</strong> Tabela de trades + equity curve (uPlot)<br>
     <strong>F7c:</strong> Edição de preset<br>
     <strong>F7d:</strong> Backtest interativo<br>
     <strong>F7e:</strong> Shadow (comparar com EA)

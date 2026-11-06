@@ -1,0 +1,80 @@
+{#
+  Partial de equity (F7b-2). Renderizado por /api/equity (HTMX).
+  Usa uPlot para o gráfico.
+#}
+
+{% if points and points|length > 0 %}
+<div id="equity-chart-container" style="width:100%; height:320px; margin-top: 0.5rem;">
+  <div id="equity-chart" style="width:100%; height:100%;"></div>
+</div>
+<p style="font-size: 0.8rem; color: var(--pico-muted-color);">
+  {{ points|length }} pontos | Saldo atual:
+  <strong>{{ "%.2f" | format(points[-1].balance) }}</strong>
+</p>
+
+<script>
+  (function() {
+    // Limpa gráfico anterior (se HTMX recarregar)
+    const container = document.getElementById("equity-chart");
+    if (!container) return;
+    container.innerHTML = "";
+
+    // Dados vindos do Jinja (serializados)
+    const raw = {{ points | tojson }};
+    if (!raw || raw.length === 0) return;
+
+    // Converte para formato uPlot: [timestamps_ou_indices, valores]
+    // uPlot não usa Date nativo; usamos indices numericos
+    const n = raw.length;
+    const xs = Array.from({ length: n }, (_, i) => i);
+    const ys = raw.map(p => p.balance);
+
+    // Labels do eixo X (horários)
+    const labels = raw.map(p => p.time.slice(11, 16));  // "HH:MM"
+
+    const opts = {
+      width: container.clientWidth,
+      height: 300,
+      scales: { x: { time: false } },
+      axes: [
+        {
+          stroke: "#888",
+          grid: { stroke: "#2a2a2a" },
+          values: (u, splits) => splits.map(i => labels[Math.round(i)] || ""),
+        },
+        {
+          stroke: "#888",
+          grid: { stroke: "#2a2a2a" },
+          size: 60,
+          values: (u, splits) => splits.map(v => v.toFixed(0)),
+        },
+      ],
+      series: [
+        {},
+        {
+          label: "Saldo",
+          stroke: "#2ecc71",
+          width: 2,
+          fill: "rgba(46, 204, 113, 0.1)",
+          points: { show: false },
+        },
+      ],
+      legend: { show: false },
+      cursor: { show: true },
+    };
+
+    const data = [xs, ys];
+    const u = new uPlot(opts, data, container);
+
+    // Resize responsivo
+    const resize = () => {
+      if (container && container.clientWidth > 0) {
+        u.setSize({ width: container.clientWidth, height: 300 });
+      }
+    };
+    window.addEventListener("resize", resize);
+  })();
+</script>
+{% else %}
+<p class="status-warn">Nenhum trade registrado ainda (equity vazia).</p>
+{% endif %}

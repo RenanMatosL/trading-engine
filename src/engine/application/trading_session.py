@@ -37,7 +37,7 @@ from engine.config.presets import (
     StdDevV510Preset,
 )
 from engine.domain.shared.types import Bar, MarketSnapshot
-from engine.domain.state.store import SessionSnapshot, StateStore
+from engine.domain.state.store import SessionSnapshot, StateStore, TradeRecord
 from engine.domain.strategy.location import RegisterResult, RegionPhase, RegionState
 from engine.domain.strategy.pricing import (
     EntryLevelMode as PricingEntryMode,
@@ -468,6 +468,7 @@ class TradingSession:
         self.save_state()
 
     def notify_position_closed(self, now: datetime) -> None:
+        """Limpa o rastreamento do trade atual (chamado após SL/TP/close)."""
         self._current_entry_region = None
         self._current_entry_position = None
         self._current_entry_price = None
@@ -521,15 +522,27 @@ class TradingSession:
             return
 
         if isinstance(event, StopLossHit):
-            self._handle_sl(event.position_ticket, now)
+            self._handle_sl(
+                event.position_ticket, now,
+                deal_price=event.deal.price,
+                deal_volume=event.deal.volume,
+            )
             return
 
         if isinstance(event, TakeProfitHit):
-            self._handle_tp(event.position_ticket, now)
+            self._handle_tp(
+                event.position_ticket, now,
+                deal_price=event.deal.price,
+                deal_volume=event.deal.volume,
+            )
             return
 
         if isinstance(event, PositionClosed):
-            self._handle_close(event.position_ticket, now)
+            self._handle_close(
+                event.position_ticket, now,
+                deal_price=event.deal.price,
+                deal_volume=event.deal.volume,
+            )
             return
 
     def _infer_tier_from_comment(self, comment: str) -> int | None:
@@ -541,11 +554,27 @@ class TradingSession:
                 return i - 1
         return None
 
-    # ----------------------------------------------------------------
-    def _handle_sl(self, position_ticket: int, now: datetime) -> None:
+    def _handle_sl(
+        self,
+        position_ticket: int,
+        now: datetime,
+        deal_price: float = 0.0,
+        deal_volume: float = 0.0,
+    ) -> None:
+        """Stop Loss hit (F3b + F7b-1)."""
         self.notify_stop_loss(now)
+
+        # F7b-1: grava o trade ANTES de zerar _current_entry_*
+        self._save_closed_trade(
+            exit_reason="stop_loss",
+            now=now,
+            deal_price=deal_price,
+            deal_volume=deal_volume,
+        )
+
         region_time = self._current_entry_region
         self.notify_position_closed(now)
+
         if region_time is None:
             log.info("trade_event_sl_no_region", position=position_ticket)
             return
@@ -562,23 +591,149 @@ class TradingSession:
             log.info("trade_event_sl_consume", region=region_time.isoformat())
         self.save_state()
 
-    def _handle_tp(self, position_ticket: int, now: datetime) -> None:
+        def _handle_tp(
+        self,
+        position_ticket: int,
+        now: datetime,
+        deal_price: float = 0.0,
+        deal_volume: float = 0.0,
+    ) -> None:
+            """Take Profit hit (F3b + F7b-1)."""
         region_time = self._current_entry_region
+
+        # F7b-1: grava o trade ANTES de zerar _current_entry_*
+        self._save_closed_trade(
+            exit_reason="take_profit",
+            now=now,
+            deal_price=deal_price,
+            deal_volume=deal_volume,
+        )
+
         self.notify_position_closed(now)
+
         if region_time is not None:
             self._regions.consume(region_time)
             log.info("trade_event_tp_consume", region=region_time.isoformat())
         else:
             log.info("trade_event_tp_no_region", position=position_ticket)
+
         self.save_state()
 
-    def _handle_close(self, position_ticket: int, now: datetime) -> None:
+    def _handle_tp(
+        self,
+        position_ticket: int,
+        now: datetime,
+        deal_price: float = 0.0,
+        deal_volume: float = 0.0,
+    ) -> None:
+        """Take Profit hit (F3b + F7b-1)."""
         region_time = self._current_entry_region
+
+        # F7b-1: grava o trade ANTES de zerar _current_entry_*
+        self._save_closed_trade(
+            exit_reason="take_profit",
+            now=now,
+            deal_price=deal_price,
+            deal_volume=deal_volume,
+        )
+
         self.notify_position_closed(now)
+
+        if region_time is not None:
+            self._regions.consume(region_time)
+            log.info("trade_event_tp_consume", region=region_time.isoformat())
+        else:
+            log.info("trade_event_tp_no_region", position=position_ticket)
+
+        self.save_state()    
+
+    def _handle_close(
+        self,
+        position_ticket: int,
+        now: datetime,
+        deal_price: float = 0.0,
+        deal_volume: float = 0.0,
+    ) -> None:
+        """Fechamento manual / fim do dia (F3b + F7b-1)."""
+        region_time = self._current_entry_region
+
+        # F7b-1: grava o trade ANTES de zerar _current_entry_*
+        self._save_closed_trade(
+            exit_reason="end_of_day",
+            now=now,
+            deal_price=deal_price,
+            deal_volume=deal_volume,
+        )
+
+        self.notify_position_closed(now)
+
         if region_time is not None:
             self._regions.consume(region_time)
             log.info("trade_event_close_consume", region=region_time.isoformat())
+
         self.save_state()
+
+    def _save_closed_trade(
+        self,
+        *,
+        exit_reason: str,
+        now: datetime,
+        deal_price: float = 0.0,
+        deal_volume: float = 0.0,
+    ) -> None:
+        """Grava o trade fechado no `state_store` (F7b-1).
+
+        `deal_price` e `deal_volume` vêm do `DealInfo` (F7b-1).
+        Se forem 0 (testes antigos), usa entry_price (PnL = 0).
+        """
+        if self._store is None:
+            return
+        if self._current_entry_price is None:
+            return
+        if self._current_entry_region is None:
+            return
+        if self._current_is_buy is None:
+            return
+
+        from engine.domain.state.store import TradeRecord
+
+        entry_price = self._current_entry_price
+        is_buy = self._current_is_buy
+        region_bar_time = self._current_entry_region
+
+        # F7b-1: calcula PnL se deal_price/deal_volume vieram
+        if deal_price > 0 and deal_volume > 0:
+            sign = 1.0 if is_buy else -1.0
+            pnl_points = sign * (deal_price - entry_price) * deal_volume
+            pnl_money = pnl_points * self._preset.risk.lot_per_contract
+            exit_price = deal_price
+            volume = deal_volume
+        else:
+            # Aproximação (sem deal): PnL = 0
+            pnl_points = 0.0
+            pnl_money = 0.0
+            exit_price = entry_price
+            volume = 0.0
+
+        trade = TradeRecord(
+            id=None,
+            region_bar_time=region_bar_time,
+            is_buy=is_buy,
+            entry_time=now,
+            entry_price=entry_price,
+            exit_time=now,
+            exit_price=exit_price,
+            stop_loss=0.0,
+            take_profit=0.0,
+            initial_volume=volume,
+            pnl_points=pnl_points,
+            pnl_money=pnl_money,
+            exit_reason=exit_reason,
+        )
+        try:
+            self._store.save_trade(trade)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("save_trade_falhou", erro=str(exc))
 
     # ----------------------------------------------------------------
     # Filtros de sessão

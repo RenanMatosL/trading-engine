@@ -49,6 +49,8 @@ src/engine/web/__init__.py
 src/engine/web/app.py
 src/engine/web/deps.py
 src/engine/web/schemas.py
+src/engine/web/routes/equity.py
+src/engine/web/routes/trades.py
 src/trading_engine.egg-info/PKG-INFO
 src/trading_engine.egg-info/SOURCES.txt
 src/trading_engine.egg-info/dependency_links.txt
@@ -74,3 +76,4 @@ tests/test_shadow.py
 tests/test_simulation.py
 tests/test_state.py
 tests/test_trading_session.py
+tests/test_web.py

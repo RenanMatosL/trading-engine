@@ -66,3 +66,30 @@ class PresetUpdateRequest(BaseModel):
     take_profit: dict | None = None
     risk: dict | None = None
     regions: dict | None = None
+
+
+
+#+------------------------------------------------------------------+
+#| F7b-2: Trades + Equity                                           |
+#+------------------------------------------------------------------+
+class TradeSchema(BaseModel):
+    """Trade fechado (subset do `TradeRecord`)."""
+    id: int | None = None
+    region_bar_time: str
+    is_buy: bool
+    entry_time: str
+    entry_price: float
+    exit_time: str
+    exit_price: float
+    stop_loss: float
+    take_profit: float
+    initial_volume: float
+    pnl_points: float
+    pnl_money: float
+    exit_reason: str
+
+
+class EquityPointSchema(BaseModel):
+    """Ponto da equity curve."""
+    time: str
+    balance: float
