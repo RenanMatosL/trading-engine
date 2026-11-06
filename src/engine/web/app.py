@@ -34,6 +34,9 @@ async def lifespan(app: FastAPI):
     settings = EngineSettings()
     app.state.settings = settings
     app.state.db_path = "engine.db"
+    if not hasattr(app.state, "preset_path"):    
+        app.state.preset_path = settings.preset
+    app.state.preset_path = settings.preset
     app.state.gateway = await startup_gateway(settings)
     try:
         yield
@@ -129,6 +132,15 @@ async def api_status(request: Request):
 
     return response
 
+@app.get("/config", response_class=HTMLResponse)
+async def config_page(request: Request):
+    """Página de configuração do preset."""
+    return templates.TemplateResponse(
+        request=request,
+        name="config.html",
+        context={"title": "Config"},
+    )
+
 
 #+------------------------------------------------------------------+
 #| Static (CSS/JS)                                                  |
@@ -142,6 +154,8 @@ if _STATIC_DIR.exists():
 #+------------------------------------------------------------------+
 from engine.web.routes import equity as equity_routes
 from engine.web.routes import trades as trades_routes
+from engine.web.routes import preset as preset_routes
 
 app.include_router(trades_routes.router)
 app.include_router(equity_routes.router)
+app.include_router(preset_routes.router)  

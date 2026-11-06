@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}Config — Trading Engine{% endblock %}
+
+{% block content %}
+<h2>Configuração do Preset</h2>
+
+<p>
+  <em>Edite os parâmetros abaixo e clique em "Salvar preset".
+  O YAML anterior será copiado para <code>.bak</code> antes de salvar.</em>
+</p>
+
+<div id="preset-form"
+     hx-get="/api/preset"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  <article class="card"><p>Carregando preset...</p></article>
+</div>
+{% endblock %}

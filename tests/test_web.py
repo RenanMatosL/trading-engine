@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import yaml
+
 from fastapi.testclient import TestClient
 
 from engine.domain.state.store import TradeRecord
@@ -96,3 +98,100 @@ def test_api_trades_limit(client):
     r = client.get("/api/trades?limit=1")
     assert r.status_code == 200
     assert len(r.json()) == 1
+
+
+
+#+------------------------------------------------------------------+
+#| F7c — /api/preset (GET + POST)                                   |
+#+------------------------------------------------------------------+
+def _preset_dict() -> dict:
+    """Preset mínimo válido (para os testes)."""
+    from engine.config.presets import (
+        DetectorParams, SessionParams, StdDevV510Preset, TimeWindowParams,
+    )
+    from datetime import time
+
+    return StdDevV510Preset.model_validate({
+        "name": "test",
+        "strategy": "stddev_v510",
+        "detector": DetectorParams(mute_open_min=0).model_dump(mode="json"),
+        "session": SessionParams(
+            use_entry_block=False,
+            window=TimeWindowParams(start=time(9, 0), end=time(17, 30)),
+        ).model_dump(mode="json"),
+    }).model_dump(mode="json")
+
+
+@pytest.fixture()
+def preset_file(tmp_path):
+    """Cria um YAML temporário e ajusta `app.state.settings.preset`."""
+    yaml_path = tmp_path / "test_preset.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(_preset_dict(), sort_keys=False),
+        encoding="utf-8",
+    )
+    # Guarda o path no app
+    from engine.config.settings import EngineSettings
+    app.state.settings = EngineSettings()
+    app.state.preset_path = str(yaml_path)
+    yield yaml_path
+
+
+def test_api_preset_get_json(client, preset_file):
+    """GET /api/preset (sem HX) retorna JSON."""
+    r = client.get("/api/preset")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["name"] == "test"
+    assert data["detector"]["length"] == 180
+
+
+def test_api_preset_get_html(client, preset_file):
+    """GET /api/preset (com HX) retorna HTML."""
+    r = client.get("/api/preset", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+
+
+def test_api_preset_post_valido(client, preset_file):
+    """POST /api/preset com preset válido salva o YAML."""
+    new_preset = _preset_dict()
+    new_preset["detector"]["length"] = 200  # muda length
+
+    r = client.post("/api/preset", json=new_preset)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["preset"]["detector"]["length"] == 200
+
+    # YAML atualizado no disco
+    saved = yaml.safe_load(preset_file.read_text(encoding="utf-8"))
+    assert saved["detector"]["length"] == 200
+
+    # Backup criado
+    backup = preset_file.with_suffix(".yaml.bak")
+    assert backup.exists()
+
+
+def test_api_preset_post_invalido_rejeitado(client, preset_file):
+    """POST /api/preset com length<2 retorna 400."""
+    bad = _preset_dict()
+    bad["detector"]["length"] = 1
+
+    r = client.post("/api/preset", json=bad)
+    assert r.status_code == 400
+    assert "error" in r.json()
+
+
+def test_api_preset_post_html(client, preset_file):
+    """POST /api/preset (com HX) retorna HTML de sucesso."""
+    new_preset = _preset_dict()
+    new_preset["detector"]["length"] = 150
+
+    r = client.post(
+        "/api/preset",
+        json=new_preset,
+        headers={"HX-Request": "true"},
+    )
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
