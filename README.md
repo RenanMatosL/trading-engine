@@ -4,18 +4,18 @@ Porte da estratégia **StdDevVolumeBreakout v4.60** para Python (API oficial
 MetaTrader5), arquitetado em DDD/bounded contexts para múltiplas estratégias
 plugáveis. Plano completo: `Plano_Motor_Trading_Python.md`.
 
-**Estado atual:** **F0 → F6 concluídos + F7a + F7b-2 + F7c.** O motor
-**detecta** sinais (paridade bit-a-bit com o EA), **gerencia** regiões,
-**orquestra** sessão, **simula** trades, **executa** ordens (real + fake),
-**reage** a fills/SL/TP, **persiste** estado em SQLite, **roda em loop** real,
-**compara** decisões com o EA em tempo real (modo sombra), **opera com parciais**
+**Estado atual:** **F0 → F6 + F7a → F7e concluídos.** O motor **detecta**
+sinais (paridade bit-a-bit com o EA), **gerencia** regiões, **orquestra**
+sessão, **simula** trades, **executa** ordens (real + fake), **reage** a
+fills/SL/TP, **persiste** estado em SQLite, **roda em loop** real, **compara**
+decisões com o EA em tempo real (modo sombra), **opera com parciais**
 (tiers 1/2/3) com breakeven após Tier 1, **opera com reforço** no retorno à
 entrada, **gerencia validade de regiões por pregões reais** (calendário B3),
 **suporta slippage/spread no simulador**, **suporta multi-estratégia** (N sessões
 por tick), **roda backtest próprio** (sem MT5, com métricas), e tem **frontend
-web** (FastAPI + HTMX + Pico + uPlot) com **dashboard** (status + equity + trades)
-e **config** (edição de preset).
-**F7d (backtest no frontend) é o próximo passo.**
+web** completo (FastAPI + HTMX + Pico + uPlot) com **dashboard** (status +
+equity + trades), **config** (edição de preset), **backtest** (upload CSV e resultado) e **shadow** (comparação read-only com o EA).
+**F7f (SSE no frontend) é o próximo passo.**
 
 ---
 
@@ -38,18 +38,13 @@ uv run engine run --demo --db engine_demo.db        # loop real em demo
 uv run engine shadow --ea-magic 20260718 --duration 60   # modo sombra
 uv run engine backtest --csv tests/fixtures/sample_bars.csv   # backtest
 uv run uvicorn engine.web.app:app --reload --port 8000   # frontend
-uv run pytest -q                  # suíte completa (~225 testes)
-```
+uv run pytest -q                  # suíte completa (~231 testes)
+Linux/macOS (desenvolvimento sem MT5): uv pip install -e ".[dev]" e usar --fake.
 
-Linux/macOS (desenvolvimento sem MT5): `uv pip install -e ".[dev]"` e usar `--fake`.
+Frontend: abra http://localhost:8000 no navegador (com o uvicorn rodando).
 
-**Frontend:** abra `http://localhost:8000` no navegador (com o `uvicorn` rodando).
-
----
-
-## Estrutura atual
-
-```
+Estrutura atual
+text
 src/engine/
 ├── domain/                          # PURO: zero imports externos
 │   ├── shared/types.py              # Bar, Side, VolumeSource, MarketSnapshot
@@ -105,13 +100,15 @@ src/engine/
 │
 ├── web/                             # Frontend (F7a+)
 │   ├── __init__.py
-│   ├── app.py                       # FastAPI app + rotas (F7a + F7c)
+│   ├── app.py                       # FastAPI app + rotas (F7a + F7c + F7d + F7e)
 │   ├── deps.py                      # dependências (gateway, settings) (F7a)
 │   ├── schemas.py                   # Pydantic (request/response)
 │   ├── routes/
 │   │   ├── trades.py                # GET /api/trades (F7b-2)
 │   │   ├── equity.py                # GET /api/equity (F7b-2)
-│   │   └── preset.py                # GET/POST /api/preset (F7c)
+│   │   ├── preset.py                # GET/POST /api/preset (F7c)
+│   │   ├── backtest.py              # GET/POST /api/backtest (F7d)
+│   │   └── shadow.py                # GET/POST /api/shadow (F7e)
 │   ├── templates/
 │   │   ├── base.html                # layout + HTMX + Pico + uPlot + json-enc
 │   │   ├── dashboard.html           # página principal (F7a + F7b-2)
@@ -119,7 +116,11 @@ src/engine/
 │   │   ├── _trades.html             # partial (trades) (F7b-2)
 │   │   ├── _equity.html             # partial (equity, uPlot) (F7b-2)
 │   │   ├── config.html              # página de config (F7c)
-│   │   └── _preset.html             # partial (formulário, 7 blocos) (F7c)
+│   │   ├── _preset.html             # partial (formulário, 7 blocos) (F7c)
+│   │   ├── backtest.html            # página de backtest (F7d)
+│   │   ├── _backtest.html           # partial (form + resultado) (F7d)
+│   │   ├── shadow.html              # página de shadow (F7e)
+│   │   └── _shadow.html             # partial (form + resultado) (F7e)
 │   └── static/
 │       ├── htmx.min.js              # 48 KB
 │       ├── pico.min.css             # 83 KB
@@ -153,196 +154,238 @@ tests/
 ├── test_csv_loader.py               # load_bars_csv (F6)
 ├── test_metrics.py                  # métricas (F6)
 ├── test_backtester.py               # Backtester (F6)
-└── test_web.py                      # 10 testes (F7b-2 + F7c)
-```
+└── test_web.py                      # 16 testes (F7b-2 + F7c + F7d + F7e)
+Fases concluídas
+F0 ✔ — Esqueleto
+CLI (engine status | check-config | version)
 
----
+EngineSettings (pydantic-settings, prefixo ENGINE_, nested __)
 
-## Fases concluídas
+BrokerGateway (Protocol) + RealMT5Gateway (import tardio) + FakeGateway
 
-### F0 ✔ — Esqueleto
-- CLI (`engine status | check-config | version`)
-- `EngineSettings` (pydantic-settings, prefixo `ENGINE_`, nested `__`)
-- `BrokerGateway` (Protocol) + `RealMT5Gateway` (import tardio) + `FakeGateway`
-- Logging estruturado (structlog: console legível ou JSON)
-- Empacotamento `src/` layout, entry point `engine = engine.cli:main`
+Logging estruturado (structlog: console legível ou JSON)
 
-### F1 ✔ — Paridade do detector com EA v4.60
-- **Paridade bit-a-bit confirmada** em 500 candles reais do `WIN$N M1`
-- Fixture golden gerado pelo script `z_dump.mq5` rodado no MT5 (679 candles)
-- Semântica travada: janela **inclui** o candle avaliado, desvio **amostral (n−1)**,
-  fonte TICK, candle em formação excluído
+Empacotamento src/ layout, entry point engine = engine.cli:main
 
-### F2a ✔ — Preset completo
-- 7 seções em `StdDevV510Preset`: `detector`, `session`, `entry`, `stop`,
-  `take_profit`, `risk`, `regions`
-- **Validadores cruzados** replicam o `OnInit()` do EA
-- `presets/stddev_v510_default.yaml` mapeia cada valor ao input MQL5
-- `engine check-config` audita todas as 7 seções
+F1 ✔ — Paridade do detector com EA v4.60
+Paridade bit-a-bit confirmada em 500 candles reais do WIN$N M1
 
-### F2b ✔ — RegionManager + pricing
-- `TradeLocation` (fato imutável) + `RegionState` (estado mutável) + `RegionPhase` (enum)
-- `RegionManager`: registro, rompimento, governança, TTL, validade, rearme
-- `pricing.py`: 5 modos de entrada, 3 modos de SL, TP, regra de candle grande
-- `CandidateMode`: `HIGHEST_VOLUME` (default) e `FIRST_READY`
+Fixture golden gerado pelo script z_dump.mq5 rodado no MT5 (679 candles)
 
-### F2c ✔ — TradingSession
-- Orquestrador de decisão (sem ordens, sem MT5)
-- `on_bar_closed(bar, zscore, now)` — filtro `mute_open_min` + registro de região
-- `on_tick(snapshot)` — rompimento, TTL, filtros de sessão, `TradeIntent`
-- Filtros: horário operacional, entry block, cooldown pós-SL, limite diário,
-  carry delay, `mute_open_min`
+Semântica travada: janela inclui o candle avaliado, desvio amostral (n−1),
+fonte TICK, candle em formação excluído
 
-### F2d ✔ — Simulador (F6-lite)
-- `EventFeed` (`BarEvent | TickEvent`) em ordem cronológica
-- `SimulatedExecutor`: fill de limite quando `bid <= entry` (compra) /
-  `ask >= entry` (venda); SL **ganha empate** dentro do mesmo tick
-- `run_simulation(feed, preset)` → `SimulationResult` (trades + equity + stats)
+F2a ✔ — Preset completo
+7 seções em StdDevV510Preset: detector, session, entry, stop,
+take_profit, risk, regions
 
-### F3a ✔ — RealExecutor + BrokerGateway expandido
-- `BrokerGateway` expandido: `place_order`, `cancel_order`, `modify_position`,
-  `close_position`, `positions`, `orders`, `history_deals`
-- `RealExecutor`: calcula volume, chama `place_order`, retorna `ExecutionResult`
+Validadores cruzados replicam o OnInit() do EA
 
-### F3b ✔ — TradeEventPoller + notificações
-- `TradeEventPoller`: lê `history_deals`, classifica em 5 tipos
-- `TradingSession.on_trade_event`: reage (cooldown, rearme, consume)
+presets/stddev_v510_default.yaml mapeia cada valor ao input MQL5
 
-### F3c ✔ — Persistência SQLite
-- `StateStore` (Protocol) + `SessionSnapshot` (dataclass frozen)
-- `InMemoryStateStore` + `SqliteStateStore` (schema auto-criado)
+engine check-config audita todas as 7 seções
 
-### F3d ✔ — `engine run` (loop real + demo)
-- Subcomando `engine run` com `--dry-run`, `--demo`, `--db`, `--poll-interval`,
-  `--max-ticks`, `--fast`
-- `TickInfo` + `symbol_info_tick(symbol)`
+F2b ✔ — RegionManager + pricing
+TradeLocation (fato imutável) + RegionState (estado mutável) + RegionPhase (enum)
 
-### F4 ✔ — Modo sombra
-- `ShadowReport` + `Divergence`
-- `ShadowComparer.compare`: match por `(bar_time, is_buy, entry_price ± tolerance)`
-- Relatório JSON em `reports/shadow_YYYYMMDD_HHMMSS.json`
+RegionManager: registro, rompimento, governança, TTL, validade, rearme
 
-### F5a ✔ — Parciais (tiers 1/2/3)
-- `PartialSpec` + `make_partial_specs`
-- `RealExecutor.place_partial_orders(intent, symbol)`
-- Breakeven após Tier 1
+pricing.py: 5 modos de entrada, 3 modos de SL, TP, regra de candle grande
 
-### F5b ✔ — By-risk sizing
-- `_compute_volume` com `SizingMode.BY_RISK` (fixed_money / percent_balance)
+CandidateMode: HIGHEST_VOLUME (default) e FIRST_READY
 
-### F5c ✔ — Reforço no retorno à entrada
-- `ReentryIntent` emitida pelo `TradingSession._maybe_reentry`
-- `executor.place_reentry_order` + `place_reentry_exits`
+F2c ✔ — TradingSession
+Orquestrador de decisão (sem ordens, sem MT5)
 
-### F5d ✔ — Validade por pregões reais (calendário B3)
-- `B3Calendar` — feriados 2026-2027 hardcoded
-- `TradingWindow.session_shift(bar_time, now, calendar)`
+on_bar_closed(bar, zscore, now) — filtro mute_open_min + registro de região
 
-### F5e ✔ — Slippage/spread + correções pendentes
-- `SimulatedExecutor(slippage_points, spread_points)`
-- `OrderRequest.is_stop: bool`
-- `TradingSession.calendar` (B3Calendar por default)
-- `SessionSnapshot` persiste parciais/reforço
+on_tick(snapshot) — rompimento, TTL, filtros de sessão, TradeIntent
 
-### F5f ✔ — Multi-estratégia
-- `StrategyConfig` + `StrategyRegistry`
-- `engine run --strategies=A,B` (N sessões por tick)
+Filtros: horário operacional, entry block, cooldown pós-SL, limite diário,
+carry delay, mute_open_min
 
-### F6 ✔ — Backtester próprio
-- `load_bars_csv`, `metrics.py`, `Backtester.run(bars) → BacktestResult`
-- `engine backtest --csv PATH`
+F2d ✔ — Simulador (F6-lite)
+EventFeed (BarEvent | TickEvent) em ordem cronológica
 
-### F7a ✔ — Frontend setup + status
-- FastAPI + uvicorn + HTMX + Pico.css + Jinja2
-- `GET /` → dashboard (status)
-- `GET /api/status` → JSON/HTML (conta + detector)
+SimulatedExecutor: fill de limite quando bid <= entry (compra) /
+ask >= entry (venda); SL ganha empate dentro do mesmo tick
 
-### F7b-1 ✔ — Tabela `trades` no SQLite
-- `TradeRecord` + `save_trade`/`list_trades`/`list_equity`
-- `TradingSession._save_closed_trade` (grava em SL/TP/close)
+run_simulation(feed, preset) → SimulationResult (trades + equity + stats)
 
-### F7b-2 ✔ — Dashboard completo
-- `GET /api/trades` + `GET /api/equity` (JSON/HTML)
-- `_trades.html` + `_equity.html` (uPlot)
-- Dashboard com 3 seções (status + equity + trades)
+F3a ✔ — RealExecutor + BrokerGateway expandido
+BrokerGateway expandido: place_order, cancel_order, modify_position,
+close_position, positions, orders, history_deals
 
-### F7c ✔ — Config (edição de preset)
-- `GET /api/preset` (JSON/HTML)
-- `POST /api/preset` (valida + backup `.bak` + salva YAML)
-- Página `/config` com formulário (7 blocos)
-- Plugin `json-enc` do HTMX
+RealExecutor: calcula volume, chama place_order, retorna ExecutionResult
 
----
+F3b ✔ — TradeEventPoller + notificações
+TradeEventPoller: lê history_deals, classifica em 5 tipos
 
-## Decisões de arquitetura (registradas)
+TradingSession.on_trade_event: reage (cooldown, rearme, consume)
 
-| Tema | Decisão |
-|---|---|
-| Config | Pydantic 2 + pydantic-settings (.env); Pulumi adiado até deploy em nuvem |
-| Backtest | `.mq5` (Strategy Tester) **ou** `engine backtest` (F6) |
-| Estado | SQLite em F3c (regiões + session_state), com schema auto-criado |
-| Barramento | Interno síncrono; RabbitMQ só se distribuir (F8+) |
-| Semântica detector | **Idêntica ao EA** (janela inclusiva, desvio amostral, fórmula de uma passada) |
-| Sizing | Fixo (`total_contracts * lot_per_contract`) **ou** by-risk (fixed_money / % balance) |
-| Modelo de execução | SL ganha empate no simulador (conservador, MT5-style) |
-| `RegionManager` | dict mutável + enum de fase (evita flags impossíveis); `MAX_LOC=12` |
-| Filtro de abertura | `mute_open_min` no `TradingSession` (não no `RegionManager`) |
-| Volume REAL | Fallback REAL→TICK no domínio (defensável; `WIN$N` tem real_volume > 0) |
-| Datas | Sempre `aware UTC` nos métodos públicos; normalizar `since` naive |
-| Modo sombra | Magic do EA por parâmetro (não hardcoded); comparação por `bar_time` |
-| Parciais (F5a) | `comment=engine_partial_N`; `_infer_tier_from_comment` extrai o N |
-| Reforço (F5c) | `comment=engine_reentry` (entrada) e `engine_reentry_tp`/`engine_reentry_sl` (saídas) |
-| Calendário B3 (F5d) | Feriados 2026-2027 hardcoded; atualizar uma vez por ano |
-| Slippage (F5e) | `SimulatedExecutor(slippage_points, spread_points)`; pior caso sempre |
-| `is_stop` (F5e) | Campo explícito no `OrderRequest` (elimina detecção por string) |
-| Multi-estratégia (F5f) | `StrategyRegistry` + `engine run --strategies=A,B`; N sessões por tick |
-| Backtester (F6) | `Backtester` reusa `SimulatedExecutor` + `EventFeed`; 2 ticks por candle |
-| Frontend (F7a) | FastAPI + HTMX + Pico + Jinja2; sem Node.js, sem build step |
-| HTMX (F7a) | `hx-swap="innerHTML"`; negociação HTML/JSON via header `HX-Request` |
-| Gráficos (F7b-2) | uPlot (50 KB) para equity curve |
-| Trades no dashboard (F7b-1) | SQLite (`engine.db`, tabela `trades`); persiste sem MT5 |
-| Config (F7c) | Formulário com `hx-ext="json-enc"`; backup `.bak` antes de salvar |
+F3c ✔ — Persistência SQLite
+StateStore (Protocol) + SessionSnapshot (dataclass frozen)
 
----
+InMemoryStateStore + SqliteStateStore (schema auto-criado)
 
-## Roadmap
+F3d ✔ — engine run (loop real + demo)
+Subcomando engine run com --dry-run, --demo, --db, --poll-interval,
+--max-ticks, --fast
 
-| Fase | Descrição | Status |
-|---|---|---|
-| **F0** | Esqueleto (CLI, config, ACL, fake) | ✔ |
-| **F1** | Paridade do detector com EA v4.60 (500 candles, tol=1e-9) | ✔ |
-| **F2a** | Preset completo (7 seções) + validadores cruzados + YAML | ✔ |
-| **F2b** | RegionManager + TradeLocation + pricing (5 modos entry, 3 SL) | ✔ |
-| **F2c** | TradingSession (filtros de sessão + TradeIntent) | ✔ |
-| **F2d** | Simulador (EventFeed + SimulatedExecutor + run_simulation) | ✔ |
-| **F3a** | RealExecutor + BrokerGateway expandido | ✔ |
-| **F3b** | TradeEventPoller + notificações | ✔ |
-| **F3c** | Persistência SQLite | ✔ |
-| **F3d** | `engine run` (loop real + demo) | ✔ |
-| **F4** | Modo sombra (compara decisões com EA em tempo real) | ✔ |
-| **F5a** | Parciais (tiers 1/2/3) + breakeven após Tier 1 | ✔ |
-| **F5b** | By-risk sizing (fixed_money + percent_balance) | ✔ |
-| **F5c** | Reforço no retorno à entrada (`use_reentry`) | ✔ |
-| **F5d** | Validade por pregões reais (calendário B3) | ✔ |
-| **F5e** | Slippage/spread + `is_stop` + calendar + persistência | ✔ |
-| **F5f** | Multi-estratégia (`StrategyConfig` + `StrategyRegistry`) | ✔ |
-| **F6** | Backtester próprio (sem MT5, com métricas) | ✔ |
-| **F7a** | Frontend setup + status (FastAPI + HTMX + Pico) | ✔ |
-| **F7b-1** | Tabela `trades` no SQLite + gravação em `on_trade_event` | ✔ |
-| **F7b-2** | Dashboard com equity curve (uPlot) + tabela de trades | ✔ |
-| **F7c** | Config (edição de preset via formulário) | ✔ |
-| **F7d** | Backtest (upload CSV + resultado) | ⏳ **próximo** |
-| **F7e** | Shadow (rodar + resultado) | ⏳ pendente |
-| **F7f** | SSE (status em tempo real) | ⏳ pendente |
-| **F7g** | Testes (TestClient do FastAPI) | ⏳ pendente |
-| **F8+** | Validação em demo, parciais/reforço no simulador, multi-símbolo, observabilidade | ⏳ opcional |
+TickInfo + symbol_info_tick(symbol)
 
----
+F4 ✔ — Modo sombra
+ShadowReport + Divergence
 
-## Suíte de testes
+ShadowComparer.compare: match por (bar_time, is_buy, entry_price ± tolerance)
 
-```powershell
-uv run pytest -q                              # ~225 testes
+Relatório JSON em reports/shadow_YYYYMMDD_HHMMSS.json
+
+F5a ✔ — Parciais (tiers 1/2/3)
+PartialSpec + make_partial_specs
+
+RealExecutor.place_partial_orders(intent, symbol)
+
+Breakeven após Tier 1
+
+F5b ✔ — By-risk sizing
+_compute_volume com SizingMode.BY_RISK (fixed_money / percent_balance)
+
+F5c ✔ — Reforço no retorno à entrada
+ReentryIntent emitida pelo TradingSession._maybe_reentry
+
+executor.place_reentry_order + place_reentry_exits
+
+F5d ✔ — Validade por pregões reais (calendário B3)
+B3Calendar — feriados 2026-2027 hardcoded
+
+TradingWindow.session_shift(bar_time, now, calendar)
+
+F5e ✔ — Slippage/spread + correções pendentes
+SimulatedExecutor(slippage_points, spread_points)
+
+OrderRequest.is_stop: bool
+
+TradingSession.calendar (B3Calendar por default)
+
+SessionSnapshot persiste parciais/reforço
+
+F5f ✔ — Multi-estratégia
+StrategyConfig + StrategyRegistry
+
+engine run --strategies=A,B (N sessões por tick)
+
+F6 ✔ — Backtester próprio
+load_bars_csv, metrics.py, Backtester.run(bars) → BacktestResult
+
+engine backtest --csv PATH
+
+F7a ✔ — Frontend setup + status
+FastAPI + uvicorn + HTMX + Pico.css + Jinja2
+
+GET / → dashboard (status)
+
+GET /api/status → JSON/HTML (conta + detector)
+
+F7b-1 ✔ — Tabela trades no SQLite
+TradeRecord + save_trade/list_trades/list_equity
+
+TradingSession._save_closed_trade (grava em SL/TP/close)
+
+F7b-2 ✔ — Dashboard completo
+GET /api/trades + GET /api/equity (JSON/HTML)
+
+_trades.html + _equity.html (uPlot)
+
+Dashboard com 3 seções (status + equity + trades)
+
+F7c ✔ — Config (edição de preset)
+GET /api/preset (JSON/HTML)
+
+POST /api/preset (valida + backup .bak + salva YAML)
+
+Página /config com formulário (7 blocos)
+
+Plugin json-enc do HTMX
+
+F7d ✔ — Backtest
+GET /backtest (página com upload de CSV)
+
+POST /api/backtest (roda Backtester e retorna métricas em HTML/JSON)
+
+_backtest.html (formulário + card verde com resultado)
+
+Multipart form (hx-encoding)
+
+F7e ✔ — Shadow (read-only)
+GET /shadow (página com aviso vermelho sobre read-only vs CLI)
+
+POST /api/shadow (coleta deals do EA e do Python e usa ShadowComparer)
+
+_shadow.html (formulário + card verde com Match Rate + tabela de divergências)
+
+Uso de _ShadowTrade (duck typing) para evitar dependência de TradeIntent inteiro
+
+Decisões de arquitetura (registradas)
+Tema	Decisão
+Config	Pydantic 2 + pydantic-settings (.env); Pulumi adiado até deploy em nuvem
+Backtest	.mq5 (Strategy Tester) ou engine backtest (F6)
+Estado	SQLite em F3c (regiões + session_state), com schema auto-criado
+Barramento	Interno síncrono; RabbitMQ só se distribuir (F8+)
+Semântica detector	Idêntica ao EA (janela inclusiva, desvio amostral, fórmula de uma passada)
+Sizing	Fixo (total_contracts * lot_per_contract) ou by-risk (fixed_money / % balance)
+Modelo de execução	SL ganha empate no simulador (conservador, MT5-style)
+RegionManager	dict mutável + enum de fase (evita flags impossíveis); MAX_LOC=12
+Filtro de abertura	mute_open_min no TradingSession (não no RegionManager)
+Volume REAL	Fallback REAL→TICK no domínio (defensável; WIN$N tem real_volume > 0)
+Datas	Sempre aware UTC nos métodos públicos; normalizar since naive
+Modo sombra	Magic do EA por parâmetro (não hardcoded); comparação por bar_time
+Parciais (F5a)	comment=engine_partial_N; _infer_tier_from_comment extrai o N
+Reforço (F5c)	comment=engine_reentry (entrada) e engine_reentry_tp/engine_reentry_sl (saídas)
+Calendário B3 (F5d)	Feriados 2026-2027 hardcoded; atualizar uma vez por ano
+Slippage (F5e)	SimulatedExecutor(slippage_points, spread_points); pior caso sempre
+is_stop (F5e)	Campo explícito no OrderRequest (elimina detecção por string)
+Multi-estratégia (F5f)	StrategyRegistry + engine run --strategies=A,B; N sessões por tick
+Backtester (F6)	Backtester reusa SimulatedExecutor + EventFeed; 2 ticks por candle
+Frontend (F7a)	FastAPI + HTMX + Pico + Jinja2; sem Node.js, sem build step
+HTMX (F7a)	hx-swap="innerHTML"; negociação HTML/JSON via header HX-Request
+Gráficos (F7b-2)	uPlot (50 KB) para equity curve
+Trades no dashboard (F7b-1)	SQLite (engine.db, tabela trades); persiste sem MT5
+Config (F7c)	Formulário com hx-ext="json-enc"; backup .bak antes de salvar
+Backtest (F7d)	Multipart upload (hx-encoding); Backtester síncrono e read-only
+Shadow (F7e)	Read-only (ShadowComparer); não coloca ordens; usa duck typing
+Roadmap
+Fase	Descrição	Status
+F0	Esqueleto (CLI, config, ACL, fake)	✔
+F1	Paridade do detector com EA v4.60 (500 candles, tol=1e-9)	✔
+F2a	Preset completo (7 seções) + validadores cruzados + YAML	✔
+F2b	RegionManager + TradeLocation + pricing (5 modos entry, 3 SL)	✔
+F2c	TradingSession (filtros de sessão + TradeIntent)	✔
+F2d	Simulador (EventFeed + SimulatedExecutor + run_simulation)	✔
+F3a	RealExecutor + BrokerGateway expandido	✔
+F3b	TradeEventPoller + notificações	✔
+F3c	Persistência SQLite	✔
+F3d	engine run (loop real + demo)	✔
+F4	Modo sombra (compara decisões com EA em tempo real)	✔
+F5a	Parciais (tiers 1/2/3) + breakeven após Tier 1	✔
+F5b	By-risk sizing (fixed_money + percent_balance)	✔
+F5c	Reforço no retorno à entrada (use_reentry)	✔
+F5d	Validade por pregões reais (calendário B3)	✔
+F5e	Slippage/spread + is_stop + calendar + persistência	✔
+F5f	Multi-estratégia (StrategyConfig + StrategyRegistry)	✔
+F6	Backtester próprio (sem MT5, com métricas)	✔
+F7a	Frontend setup + status (FastAPI + HTMX + Pico)	✔
+F7b-1	Tabela trades no SQLite + gravação em on_trade_event	✔
+F7b-2	Dashboard com equity curve (uPlot) + tabela de trades	✔
+F7c	Config (edição de preset via formulário)	✔
+F7d	Backtest (upload CSV + resultado)	✔
+F7e	Shadow (rodar + resultado)	✔
+F7f	SSE (status em tempo real)	⏳ próximo
+F7g	Testes (TestClient do FastAPI)	⏳ pendente
+F8+	Validação em demo, parciais/reforço no simulador, multi-símbolo, observabilidade	⏳ opcional
+Suíte de testes
+powershell
+uv run pytest -q                              # ~231 testes
 uv run pytest -v                              # verbose
 uv run pytest tests/test_golden_v510.py -v    # só paridade do detector
 uv run pytest tests/test_calendar.py -v       # calendário B3 (F5d)
@@ -355,14 +398,9 @@ uv run pytest tests/test_registry.py -v       # multi-estratégia (F5f)
 uv run pytest tests/test_csv_loader.py -v     # CSV loader (F6)
 uv run pytest tests/test_metrics.py -v        # métricas (F6)
 uv run pytest tests/test_backtester.py -v     # Backtester (F6)
-uv run pytest tests/test_web.py -v            # frontend (F7b-2 + F7c)
-```
-
----
-
-## Comandos úteis (CLI + Frontend)
-
-```powershell
+uv run pytest tests/test_web.py -v            # frontend (F7b-2 a F7e)
+Comandos úteis (CLI + Frontend)
+powershell
 # Backend (CLI)
 uv run engine version                              # versão
 uv run engine check-config                         # audita preset (7 seções)
@@ -376,18 +414,21 @@ uv run engine backtest --csv PATH                  # backtest (F6)
 
 # Frontend
 uv run uvicorn engine.web.app:app --reload --port 8000   # servidor web
-# Abrir: http://localhost:8000       (dashboard)
-#        http://localhost:8000/config (config)
-```
+# Abrir: http://localhost:8000          (dashboard)
+#        http://localhost:8000/config   (config)
+#        http://localhost:8000/backtest (backtest)
+#        http://localhost:8000/shadow   (shadow - read only)
+Referências
+EA de referência: StdDevVolumeBreakout.mq5 v4.60 (Renan)
 
----
+Indicador companheiro: VolumeStdBarPainter.mq5 v3.00 (multi-nível) e v1.00 (simples)
 
-## Referências
+Script golden: z_dump.mq5 (exporta candles + z-score para CSV)
 
-- **EA de referência:** `StdDevVolumeBreakout.mq5` v4.60 (Renan)
-- **Indicador companheiro:** `VolumeStdBarPainter.mq5` v3.00 (multi-nível) e v1.00 (simples)
-- **Script golden:** `z_dump.mq5` (exporta candles + z-score para CSV)
-- **Fixture real:** `tests/fixtures/v510_expected.csv` (679 candles `WIN$N M1`, 29/10/2026)
-- **Plano completo:** `Plano_Motor_Trading_Python.md`
-- **Guia de retomada backend:** `ai.md`
-- **Guia de retomada frontend:** `ai_front_end.md`
+Fixture real: tests/fixtures/v510_expected.csv (679 candles WIN$N M1, 29/10/2026)
+
+Plano completo: Plano_Motor_Trading_Python.md
+
+Guia de retomada backend: ai.md
+
+Guia de retomada frontend: ai_front_end.md

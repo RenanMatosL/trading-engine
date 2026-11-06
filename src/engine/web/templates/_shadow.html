@@ -1,0 +1,148 @@
+{#
+  Partial de shadow (F7e).
+  Renderizado por:
+    - GET  /api/shadow  (form inicial, via HTMX)
+    - POST /api/shadow  (após comparar, com report ou erro)
+  Recebe:
+    - report: dict | None (ShadowReport.to_dict())
+    - error: str | None
+    - form: dict (últimos valores submetidos, p/ repopular)
+#}
+
+{% if error %}
+  <article style="background: #3a1a1a; border-color: #e74c3c;">
+    <strong class="status-error">✗ Erro:</strong> {{ error }}
+  </article>
+{% endif %}
+
+{% if report %}
+  <div class="card" style="background: #1a3a2a; border-color: #2ecc71; margin-bottom: 1rem;">
+    <h3>Resultado do Shadow</h3>
+    <div class="grid-3">
+      <div class="metric">
+        <span class="metric-label">Match Rate</span>
+        <span class="metric-value">
+          {% if report.match_rate >= 0.95 %}
+            <span class="status-ok">{{ "%.2f" | format(report.match_rate * 100) }}%</span>
+          {% elif report.match_rate >= 0.80 %}
+            <span class="status-warn">{{ "%.2f" | format(report.match_rate * 100) }}%</span>
+          {% else %}
+            <span class="status-error">{{ "%.2f" | format(report.match_rate * 100) }}%</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Matched</span>
+        <span class="metric-value">{{ report.matched }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Mismatches</span>
+        <span class="metric-value">
+          {% if report.mismatches > 0 %}
+            <span class="status-error">{{ report.mismatches }}</span>
+          {% else %}
+            0
+          {% endif %}
+        </span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">EA Only</span>
+        <span class="metric-value">{{ report.ea_only }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Python Only</span>
+        <span class="metric-value">{{ report.py_only }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Total EA / Py</span>
+        <span class="metric-value">{{ report.total_ea }} / {{ report.total_py }}</span>
+      </div>
+    </div>
+    <p style="font-size: 0.8rem; color: var(--pico-muted-color);">
+      Janela: {{ report.start[:19] }} → {{ report.end[:19] }}
+    </p>
+  </div>
+
+  {% if report.divergences %}
+    <div class="card" style="margin-bottom: 1rem;">
+      <h4>Divergências ({{ report.divergences | length }})</h4>
+      <div style="max-height: 400px; overflow-y: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Bar Time</th>
+              <th>Lado</th>
+              <th>Tipo</th>
+              <th>EA Price</th>
+              <th>Py Price</th>
+              <th>Detalhe</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in report.divergences %}
+              <tr>
+                <td>{{ d.bar_time[:19] }}</td>
+                <td>
+                  {% if d.is_buy %}
+                    <span class="status-ok">BUY</span>
+                  {% else %}
+                    <span class="status-error">SELL</span>
+                  {% endif %}
+                </td>
+                <td>{{ d.kind }}</td>
+                <td>{{ d.ea_price if d.ea_price is not none else "—" }}</td>
+                <td>{{ d.py_price if d.py_price is not none else "—" }}</td>
+                <td style="font-size: 0.85rem;">{{ d.detail }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% else %}
+    <article class="card" style="border-color: #2ecc71;">
+      <strong class="status-ok">✓ Sem divergências.</strong>
+      Todos os trades batem.
+    </article>
+  {% endif %}
+{% endif %}
+
+<form hx-post="/api/shadow"
+      hx-target="#shadow-form"
+      hx-swap="outerHTML"
+      id="shadow-form">
+
+  <div class="card">
+    <h3>Comparar EA × Python</h3>
+    <div class="grid-3">
+      <label>
+        EA Magic (obrigatório)
+        <input type="number" name="ea_magic" required
+               value="{{ form.ea_magic if form and form.ea_magic else '' }}">
+      </label>
+      <label>
+        Python Magic (default = EA + 1)
+        <input type="number" name="py_magic"
+               value="{{ form.py_magic if form and form.py_magic else '' }}">
+      </label>
+      <label>
+        Duração (min, últimos N min)
+        <input type="number" name="duration_min" min="1" max="10080"
+               value="{{ form.duration_min if form and form.duration_min else 60 }}">
+      </label>
+      <label>
+        Tolerância (pts)
+        <input type="number" name="tolerance_points" step="0.1" min="0"
+               value="{{ form.tolerance_points if form and form.tolerance_points else 2.0 }}">
+      </label>
+      <label>
+        Símbolo (opcional)
+        <input type="text" name="symbol"
+               placeholder="WIN$N"
+               value="{{ form.symbol if form and form.symbol else '' }}">
+      </label>
+    </div>
+  </div>
+
+  <button type="submit">Comparar</button>
+</form>

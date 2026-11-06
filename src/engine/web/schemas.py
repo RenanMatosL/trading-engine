@@ -93,3 +93,25 @@ class EquityPointSchema(BaseModel):
     """Ponto da equity curve."""
     time: str
     balance: float
+
+
+
+#+------------------------------------------------------------------+
+#| F7d: Backtest                                                    |
+#+------------------------------------------------------------------+
+class BacktestResponse(BaseModel):
+    n_bars: int
+    start: str
+    end: str
+    n_trades: int
+    winners: int
+    losers: int
+    win_rate: float
+    total_pnl: float
+    return_pct: float
+    sharpe: float
+    max_drawdown_pct: float
+    profit_factor: float | str
+    avg_win: float
+    avg_loss: float
+    total_return_pct: float

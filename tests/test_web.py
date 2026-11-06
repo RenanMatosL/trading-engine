@@ -195,3 +195,95 @@ def test_api_preset_post_html(client, preset_file):
     )
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+
+
+
+#+------------------------------------------------------------------+
+#| F7d — /api/backtest                                              |
+#+------------------------------------------------------------------+
+def test_api_backtest_upload(client, preset_file):
+    """POST /api/backtest com CSV válido → 200 + JSON."""
+    from pathlib import Path
+
+    sample_csv = Path(__file__).parent / "fixtures" / "sample_bars.csv"
+    assert sample_csv.exists()
+
+    with sample_csv.open("rb") as f:
+        r = client.post(
+            "/api/backtest",
+            files={"file": ("sample_bars.csv", f, "text/csv")},
+            data={"initial_balance": "100000", "slippage": "0", "spread": "0"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["n_bars"] == 10
+    assert data["n_trades"] == 0
+
+
+def test_api_backtest_csv_invalido(client, preset_file):
+    """POST /api/backtest com CSV inválido → 400."""
+    r = client.post(
+        "/api/backtest",
+        files={"file": ("bad.csv", b"time,open\n2026-01-01,100\n", "text/csv")},
+    )
+    assert r.status_code == 400
+    assert "error" in r.json()
+
+
+def test_api_backtest_sem_arquivo(client, preset_file):
+    """POST /api/backtest sem arquivo → 422 (FastAPI)."""
+    r = client.post("/api/backtest")
+    assert r.status_code == 422
+
+#+------------------------------------------------------------------+
+#| F7e — /shadow                                                   |
+#+------------------------------------------------------------------+
+def test_shadow_page(client, preset_file):
+    """GET /shadow renderiza a página."""
+    r = client.get("/shadow")
+    assert r.status_code == 200
+    assert "Shadow" in r.text
+
+
+def test_api_shadow_get(client, preset_file):
+    """GET /api/shadow retorna o partial com o form."""
+    r = client.get("/api/shadow")
+    assert r.status_code == 200
+    assert 'hx-post="/api/shadow"' in r.text
+
+
+def test_api_shadow_post_invalid(client, preset_file):
+    """POST /api/shadow com ea_magic inválido → 400."""
+    r = client.post(
+        "/api/shadow",
+        data={"ea_magic": "0", "py_magic": "1", "duration_min": "60"},
+    )
+    assert r.status_code == 400
+    assert "error" in r.json()
+
+#+------------------------------------------------------------------+
+#| F7e — /shadow                                                   |
+#+------------------------------------------------------------------+
+def test_shadow_page(client, preset_file):
+    """GET /shadow renderiza a página."""
+    r = client.get("/shadow")
+    assert r.status_code == 200
+    assert "Shadow" in r.text
+
+
+def test_api_shadow_get(client, preset_file):
+    """GET /api/shadow retorna o partial com o form."""
+    r = client.get("/api/shadow")
+    assert r.status_code == 200
+    assert 'hx-post="/api/shadow"' in r.text
+
+
+def test_api_shadow_post_invalid(client, preset_file):
+    """POST /api/shadow com ea_magic inválido → 400."""
+    r = client.post(
+        "/api/shadow",
+        data={"ea_magic": "0", "py_magic": "1", "duration_min": "60"},
+    )
+    assert r.status_code == 400
+    assert "error" in r.json()

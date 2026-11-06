@@ -27,3 +27,6 @@ reports/
 
 # Logs
 *.log
+
+#backup de preset (f7c)
+*.bak

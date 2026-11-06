@@ -6,6 +6,9 @@
 >
 > **Leia este arquivo INTEIRO antes de escrever qualquer linha de código.**
 > Ele evita retrabalho, decisões já tomadas e bugs conhecidos.
+>
+> **Este arquivo cobre o backend e visão geral.** Para o frontend (FastAPI,
+> HTMX, templates), leia o `ai_front_end.md`.
 
 ---
 
@@ -32,6 +35,7 @@ conta demo/real via MT5 e comparar resultado com o Strategy Tester do MT5.
 9. **Validade por pregões reais** (calendário B3, feriados 2026-2027).
 10. **Multi-estratégia** (N sessões por tick, cada uma com seu magic).
 11. **Backtester próprio** (sem MT5, com slippage/spread e métricas).
+12. **Interface Web (F7)** (FastAPI + HTMX + Pico CSS) para monitoramento e backtests.
 
 ---
 
@@ -57,98 +61,113 @@ conta demo/real via MT5 e comparar resultado com o Strategy Tester do MT5.
 | **F5e** | Slippage/spread + `is_stop` + calendar + persistência | ✅ fechado |
 | **F5f** | Multi-estratégia (`StrategyConfig` + `StrategyRegistry`) | ✅ fechado |
 | **F6** | Backtester próprio (sem MT5, com métricas) | ✅ fechado |
+| **F7a** | Frontend: Setup FastAPI + Pico + HTMX + `/api/status` | ✅ fechado |
+| **F7b-1** | Frontend: Tabela `trades` no SQLite + `save_trade` | ✅ fechado |
+| **F7b-2** | Frontend: Dashboard com equity curve + tabela de trades | ✅ fechado |
+| **F7c** | Frontend: Config (edição de preset via formulário) | ✅ fechado |
+| **F7d** | Frontend: Backtest (upload CSV + resultado) | ✅ fechado |
+| **F7e** | Frontend: Shadow (comparar EA vs Python) | ✅ fechado |
 
-**Suíte de testes atual:** **~211 passed** (`uv run pytest -q`).
-**Projeto completo (F0→F6).**
+**Suíte de testes atual:** **231 passed** (`uv run pytest -q`).
+**Projeto completo (F0→F6 + F7a→F7e).** Próximas fases: F7f (SSE), F7g (testes web adicionais) e F8+ (melhorias no motor).
 
 ---
 
 ## 3. Arquitetura (mapa de arquivos)
-
-```
 src/engine/
-├── domain/                          # PURO: zero imports externos
-│   ├── shared/types.py              # Bar, Side, VolumeSource, MarketSnapshot
-│   ├── risk/
-│   │   ├── calendar.py              # TradingWindow (+ session_shift)
-│   │   └── exchange_calendar.py     # B3Calendar (feriados 2026-2027) — F5d
-│   ├── state/store.py               # StateStore (Protocol) + SessionSnapshot (F3c + F5e)
-│   └── strategy/
-│       ├── detector.py              # VolumeStdDetector (paridade EA, F1)
-│       ├── location.py              # TradeLocation, RegionState, RegionPhase, RegisterResult
-│       ├── regions.py               # RegionManager (governança, TTL, validade, rearme)
-│       ├── pricing.py               # entry_level / stop_level / take_profit_level
-│       │                            #   + PricingConfig + Enums de modo
-│       └── strategy.py              # StrategyConfig (F5f)
+├── domain/ # PURO: zero imports externos
+│ ├── shared/types.py # Bar, Side, VolumeSource, MarketSnapshot
+│ ├── risk/
+│ │ ├── calendar.py # TradingWindow (+ session_shift)
+│ │ └── exchange_calendar.py # B3Calendar (feriados 2026-2027) — F5d
+│ ├── state/store.py # StateStore (Protocol) + SessionSnapshot + TradeRecord (F3c + F5e + F7b-1)
+│ └── strategy/
+│ ├── detector.py # VolumeStdDetector (paridade EA, F1)
+│ ├── location.py # TradeLocation, RegionState, RegionPhase, RegisterResult
+│ ├── regions.py # RegionManager (governança, TTL, validade, rearme)
+│ ├── pricing.py # entry_level / stop_level / take_profit_level
+│ │ # + PricingConfig + Enums de modo
+│ └── strategy.py # StrategyConfig (F5f)
 │
 ├── config/
-│   ├── settings.py                  # EngineSettings (pydantic-settings, .env)
-│   └── presets.py                   # StdDevV510Preset (7 seções + validadores cruzados)
+│ ├── settings.py # EngineSettings (pydantic-settings, .env)
+│ └── presets.py # StdDevV510Preset (7 seções + validadores cruzados)
 │
-├── application/                     # orquestração (sem MT5, sem ordens)
-│   ├── status.py                    # get_status (F0/F1)
-│   ├── intent.py                    # TradeIntent, ReentryIntent, TickDecision, BarResult
-│   ├── trading_session.py           # TradingSession (+ state_store + on_trade_event +
-│   │                                #   calendar + persistência de parciais/reforço)
-│   ├── events.py                    # EventFeed, BarEvent, TickEvent (F2d)
-│   ├── simulation.py                # run_simulation, SimulatedExecutor
-│   │                                #   + slippage/spread (F5e)
-│   ├── trade_events.py              # EntryFilled, PartialFilled, ReentryFilled,
-│   │                                #   ReentryExitFilled, StopLossHit,
-│   │                                #   TakeProfitHit, PositionClosed (F3b + F5c)
-│   ├── poller.py                    # TradeEventPoller (F3b + F5c)
-│   ├── executor.py                  # RealExecutor (+ close_all_at_end_of_day +
-│   │                                #   place_partial_orders + place_reentry_* +
-│   │                                #   by-risk sizing + is_stop)
-│   ├── shadow_report.py             # ShadowReport + Divergence (F4)
-│   ├── shadow.py                    # ShadowComparer (F4)
-│   ├── partial_spec.py              # PartialSpec + make_partial_specs (F5a)
-│   ├── registry.py                  # StrategyRegistry (F5f)
-│   ├── metrics.py                   # Sharpe, drawdown, win rate, etc (F6)
-│   └── backtester.py                # Backtester + BacktestResult (F6)
+├── application/ # orquestração (sem MT5, sem ordens)
+│ ├── status.py # get_status (F0/F1)
+│ ├── intent.py # TradeIntent, ReentryIntent, TickDecision, BarResult
+│ ├── trading_session.py # TradingSession (+ state_store + on_trade_event +
+│ │ # calendar + persistência + save_trade)
+│ ├── events.py # EventFeed, BarEvent, TickEvent (F2d)
+│ ├── simulation.py # run_simulation, SimulatedExecutor
+│ │ # + slippage/spread (F5e)
+│ ├── trade_events.py # EntryFilled, PartialFilled, ReentryFilled,
+│ │ # ReentryExitFilled, StopLossHit,
+│ │ # TakeProfitHit, PositionClosed (F3b + F5c)
+│ ├── poller.py # TradeEventPoller (F3b + F5c)
+│ ├── executor.py # RealExecutor (+ close_all_at_end_of_day +
+│ │ # place_partial_orders + place_reentry_* +
+│ │ # by-risk sizing + is_stop)
+│ ├── shadow_report.py # ShadowReport + Divergence (F4)
+│ ├── shadow.py # ShadowComparer (F4)
+│ ├── partial_spec.py # PartialSpec + make_partial_specs (F5a)
+│ ├── registry.py # StrategyRegistry (F5f)
+│ ├── metrics.py # Sharpe, drawdown, win rate, etc (F6)
+│ └── backtester.py # Backtester + BacktestResult (F6)
 │
-├── infrastructure/                  # ACL MetaTrader5 + persistência + CSV
-│   ├── mt5/
-│   │   ├── gateway.py               # BrokerGateway (Protocol) + RealMT5Gateway
-│   │   │                            #   + AccountInfo, SymbolInfo, TickInfo,
-│   │   │                            #     PositionInfo, OrderInfo, DealInfo,
-│   │   │                            #     OrderRequest (is_stop em F5e), OrderResult
-│   │   └── fake.py                  # FakeGateway (book sintético + _force_fill_pending)
-│   ├── logging/setup.py             # structlog
-│   ├── state/
-│   │   ├── memory_store.py          # InMemoryStateStore (F3c)
-│   │   └── sqlite_store.py          # SqliteStateStore + schema (F3c + F5e)
-│   └── data/
-│       └── csv_loader.py            # load_bars_csv (F6)
+├── infrastructure/ # ACL MetaTrader5 + persistência + CSV
+│ ├── mt5/
+│ │ ├── gateway.py # BrokerGateway (Protocol) + RealMT5Gateway
+│ │ │ # + AccountInfo, SymbolInfo, TickInfo,
+│ │ │ # PositionInfo, OrderInfo, DealInfo,
+│ │ │ # OrderRequest (is_stop em F5e), OrderResult
+│ │ └── fake.py # FakeGateway (book sintético + _force_fill_pending)
+│ ├── logging/setup.py # structlog
+│ ├── state/
+│ │ ├── memory_store.py # InMemoryStateStore (F3c + F7b-1)
+│ │ └── sqlite_store.py # SqliteStateStore + schema (F3c + F5e + F7b-1)
+│ └── data/
+│ └── csv_loader.py # load_bars_csv (F6)
 │
-└── cli.py                           # engine status | check-config | run | shadow |
-                                     #   backtest | version
+├── web/ # Frontend (FastAPI) — F7a+
+│ ├── app.py # App + rotas HTML + API
+│ ├── deps.py # gateway, settings
+│ ├── schemas.py # Pydantic schemas
+│ ├── routes/ # Routers (trades, equity, preset, backtest, shadow)
+│ ├── templates/ # base.html, dashboard.html, partials _*.html
+│ └── static/ # htmx, pico, uplot
+│
+└── cli.py # engine status | check-config | run | shadow |
+
+backtest | version
 presets/
-└── stddev_v510_default.yaml         # todos os inputs do EA v4.60 comentados
+└── stddev_v510_default.yaml # todos os inputs do EA v4.60 comentados
 tests/
 ├── fixtures/
-│   ├── v510_expected.csv            # 679 candles WIN$N M1 + z-score do MT5
-│   └── sample_bars.csv              # 10 candles (F6)
-├── test_calendar.py                 # TradingWindow + B3Calendar + session_shift (F5d)
+│ ├── v510_expected.csv # 679 candles WIN$N M1 + z-score do MT5
+│ └── sample_bars.csv # 10 candles (F6)
+├── test_calendar.py # TradingWindow + B3Calendar + session_shift (F5d)
 ├── test_detector.py
 ├── test_presets.py
-├── test_golden_v510.py              # paridade bit-a-bit vs EA v4.60
-├── test_regions.py                  # RegionManager + validade por pregões reais
+├── test_golden_v510.py # paridade bit-a-bit vs EA v4.60
+├── test_regions.py # RegionManager + validade por pregões reais
 ├── test_pricing.py
 ├── test_trading_session.py
-├── test_simulation.py               # simulador + slippage/spread (F5e)
-├── test_executor.py                 # executor + by-risk (F5b) + is_stop (F5e)
-├── test_poller.py                   # TradeEventPoller (+ reentry em F5c)
-├── test_state.py                    # StateStore + persistência (F5e)
+├── test_simulation.py # simulador + slippage/spread (F5e)
+├── test_executor.py # executor + by-risk (F5b) + is_stop (F5e)
+├── test_poller.py # TradeEventPoller (+ reentry em F5c)
+├── test_state.py # StateStore + persistência (F5e + F7b-1)
 ├── test_run.py
-├── test_shadow.py                   # modo sombra
-├── test_partials.py                 # parciais + integração (F5a)
-├── test_reentry.py                  # reforço (F5c)
-├── test_registry.py                 # StrategyRegistry (F5f)
-├── test_csv_loader.py               # load_bars_csv (F6)
-├── test_metrics.py                  # métricas (F6)
-└── test_backtester.py               # Backtester (F6)
-```
+├── test_shadow.py # modo sombra
+├── test_partials.py # parciais + integração (F5a)
+├── test_reentry.py # reforço (F5c)
+├── test_registry.py # StrategyRegistry (F5f)
+├── test_csv_loader.py # load_bars_csv (F6)
+├── test_metrics.py # métricas (F6)
+├── test_backtester.py # Backtester (F6)
+└── test_web.py # TestClient FastAPI (F7b-2 a F7e) — 16 testes
+
+text
 
 ---
 
@@ -170,13 +189,13 @@ tests/
 - `is_trading_day(d)` — segunda a sexta, exceto feriados.
 - `trading_days_between(start, end)` — conta pregões (negativo se `start > end`).
 - **Não** move feriados que caem em fim de semana.
-- **TODO F7+:** atualizar feriados 2028+.
+- **TODO F8+:** atualizar feriados 2028+.
 
 ### `TradingWindow.session_shift(bar_time, now, calendar)`
 - Retorna `calendar.trading_days_between(bar_time.date(), now.date())`.
 - Se `calendar is None`, fallback para **dias corridos** (comportamento antigo).
 - **Não** usa `start`/`end` do `TradingWindow` (só `bar_time` e `now`).
-- **TODO F7+:** transformar em `@staticmethod`.
+- **TODO F8+:** transformar em `@staticmethod`.
 
 ### `RegionManager`
 - Fila `dict[bar_time, RegionState]`, limite `max_loc=12` (paridade com EA).
@@ -203,6 +222,7 @@ tests/
 - **F5c:** `notify_trade_opened(...)` grava `_current_entry_price` e `_current_is_buy`; `_maybe_reentry(snapshot)` detecta quando armar (`reentry_armed`) e quando disparar (`ReentryIntent`).
 - **F5e:** `__init__` aceita `calendar: B3Calendar | None = None`. `SessionSnapshot` agora inclui 5 campos extras.
 - **F5f:** o `cmd_run` cria **N** `TradingSession` (uma por estratégia).
+- **F7b-1:** `_save_closed_trade` persiste o trade fechado no SQLite (via `state_store`).
 
 ### `TradeIntent`
 - `volume` = 0.0 até o `Executor` preencher.
@@ -244,11 +264,13 @@ tests/
 - **IMPORTANTE:** o `OrderResult` tem `@property is_ok` (não `ok`). O `ExecutionResult` do `executor.py` tem **as duas** (`.is_ok` + `.ok`, alias retrocompatível).
 - **F3d:** `TickInfo` (dataclass) + `symbol_info_tick(symbol)` no Protocol e nas duas implementações.
 - **F5e:** `OrderRequest.is_stop: bool = False`.
+- **`history_deals(since, *, symbol=None, magic=None)`** — normaliza `since` naive para UTC.
 
-### `StateStore` (F3c + F5e)
+### `StateStore` (F3c + F5e + F7b-1)
 - `StateStore` é **Protocol** (domínio puro).
 - `SessionSnapshot` é `frozen` e serializável (10 campos: `last_sl_time`, `trades_today`, `current_day`, `current_entry_region`, `current_entry_position`, `current_entry_price`, `current_is_buy`, `reentry_armed`, `reentry_done`, `partials_filled`).
 - **F5e:** persiste parciais/reforço entre reinícios.
+- **F7b-1:** `SqliteStateStore` tem tabela `trades` (TradeRecord). `save_trade()`, `list_trades(limit)`, `list_equity(limit)`.
 - Datas sempre ISO 8601 UTC.
 - `SqliteStateStore` cria schema no `__init__` (`CREATE TABLE IF NOT EXISTS`).
 
@@ -258,7 +280,7 @@ tests/
 - Match por `(bar_time, is_buy, entry_price ± tolerance_points)`. Tolerância default 2.0.
 - `match_rate = matched / max(total_ea, total_py)`. 1.0 = perfeito.
 - Relatório JSON salvo em `reports/shadow_YYYYMMDD_HHMMSS.json`.
-- **`ShadowComparer` não acessa MT5.** Só `engine shadow` acessa.
+- **`ShadowComparer` não acessa MT5.** Só `engine shadow` acessa. A rota web `POST /api/shadow` (F7e) também acessa (mas é **read-only**, não coloca ordens).
 
 ### `Backtester` (F6)
 - Consome `list[Bar]` (do `csv_loader`).
@@ -314,49 +336,46 @@ tests/
 - SL **ganha empate** dentro do mesmo tick (conservador, MT5-style).
 - Parciais: **não implementadas no simulador ainda** (F5a cobriu `RealExecutor`).
 - Volume = fixed_contracts (by-risk só em `RealExecutor`).
-- **F5e:** `SimulatedExecutor.__init__(preset, slippage_points=0.0, spread_points=0.0)`. Slippage aplicado no fill (pior caso). `spread_points` reservado para F7+.
+- **F5e:** `SimulatedExecutor.__init__(preset, slippage_points=0.0, spread_points=0.0)`. Slippage aplicado no fill (pior caso). `spread_points` reservado para F8+.
 
 ### `FakeGateway.place_order` — `is_stop` explícito (F5e)
 - **Não** detecta mais por string. Usa `req.is_stop`.
 - `is_stop=True` → registra ordem pendente (não abre posição).
 
-### Coisas que **NÃO podem ser quebradas**
-1. `test_golden_v510.py` — paridade bit-a-bit com EA. **Sagrado.**
-2. `test_regions.py` — semântica do `RegionManager` + validade por pregões. **Sagrado.**
-3. `test_presets.py` — validadores cruzados. **Sagrado.**
-4. `test_pricing.py` — fórmulas de entry/SL/TP. **Sagrado.**
-5. `test_simulation.py` — semântica de SL/TP no simulador + slippage. **Sagrado.**
-6. `test_executor.py` — place/cancel/modify/close + by-risk + is_stop. **Sagrado.**
-7. `test_poller.py` — classificação de deals + reentry. **Sagrado.**
-8. `test_trading_session.py` — filtros + on_trade_event. **Sagrado.**
-9. `test_state.py` — persistência + parciais/reforço. **Sagrado.**
-10. `test_run.py` — engine run. **Sagrado.**
-11. `test_shadow.py` — ShadowComparer. **Sagrado.**
-12. `test_partials.py` — PartialSpec + integração. **Sagrado.**
-13. `test_reentry.py` — `_maybe_reentry` + `place_reentry_*`. **Sagrado.**
-14. `test_calendar.py` — `TradingWindow` + `B3Calendar` + `session_shift`. **Sagrado.**
-15. `test_registry.py` — `StrategyConfig` + `StrategyRegistry`. **Sagrado.**
-16. `test_csv_loader.py` — `load_bars_csv`. **Sagrado.**
-17. `test_metrics.py` — métricas. **Sagrado.**
-18. `test_backtester.py` — `Backtester`. **Sagrado.**
-
-Antes de qualquer mudança, **rode `uv run pytest -q`** e confirme que continua ~211 passed.
+### Interface Web (F7)
+- **Stack:** FastAPI + Jinja2 + HTMX + Pico CSS + uPlot + SSE (F7f).
+- **Sem build step.** Sem Node.js. Bundle < 200 KB.
+- **Partial pattern:** templates começam com `_` (`_backtest.html`) ou são páginas (`backtest.html`).
+- **Regra:** o `app.py` chama `TemplateResponse` com a página; o router chama com o partial.
+- **HTMX JSON:** formulários com `hx-ext="json-enc"` (config).
+- **HTMX multipart:** formulários de upload com `hx-encoding="multipart/form-data"` (backtest).
+- **Read-only:** `/shadow` (F7e) **só compara**, não coloca ordens (usa `ShadowComparer`, não `RealExecutor`).
 
 ---
 
-## 5. Próximos passos (F7+)
+## 5. Próximos passos (F7f / F7g / F8+)
 
-O projeto **F0→F6 está 100% completo**. Próximas fases possíveis (não obrigatórias):
+O projeto **F0→F6 + F7a→F7e está 100% completo**. Próximas fases:
 
-### F7 — Validação em demo (1-2 semanas)
+### F7f — SSE (status em tempo real) — 2h
 
-**O que fazer:**
-- Rodar `engine run --demo --strategies=stddev_v510` por 1-2 semanas.
-- Rodar `engine shadow --ea-magic 20260718 --duration 60` em paralelo ao EA.
-- Comparar `reports/shadow_*.json`: taxa de match deve ser > 95%.
-- Ajustar divergências (se houver).
+**O que implementa:** `GET /stream` (SSE) + dashboard consumindo com `hx-ext="sse"`.
 
-**Critério:** taxa de match > 95% por 1 semana.
+**Arquivos:**
+- `src/engine/web/routes/stream.py` — `StreamingResponse(media_type="text/event-stream")`.
+- `src/engine/web/templates/dashboard.html` — `hx-ext="sse" sse-connect="/stream"`.
+- `tests/test_web.py` — teste de conexão SSE.
+
+**Critério:** dashboard atualiza sozinho a cada 2s (sem refresh manual).
+
+### F7g — Testes web (~10-15 testes)
+
+**O que implementa:** cobertura completa das rotas (`GET /`, `/config`, `/backtest`, `/shadow`, `POST /api/*`).
+
+**Arquivos:**
+- `tests/test_web.py` — casos de borda.
+
+**Critério:** `uv run pytest -q` → ~240 passed.
 
 ### F8 — Parciais/reforço no simulador (3-4 dias)
 
@@ -400,7 +419,7 @@ O projeto **F0→F6 está 100% completo**. Próximas fases possíveis (não obri
 
 ```powershell
 # Testes
-uv run pytest -q                              # suíte completa (~211 passed hoje)
+uv run pytest -q                              # suíte completa (231 passed hoje)
 uv run pytest tests/test_golden_v510.py -v    # paridade do detector
 uv run pytest tests/test_calendar.py -v       # calendário B3
 uv run pytest tests/test_state.py -v          # persistência + parciais/reforço
@@ -412,6 +431,10 @@ uv run pytest tests/test_registry.py -v       # multi-estratégia
 uv run pytest tests/test_csv_loader.py -v     # CSV loader (F6)
 uv run pytest tests/test_metrics.py -v        # métricas (F6)
 uv run pytest tests/test_backtester.py -v     # Backtester (F6)
+uv run pytest tests/test_web.py -v            # FastAPI web (F7a-F7e)
+
+# Frontend
+uv run uvicorn engine.web.app:app --reload --port 8000
 
 # CLI
 uv run engine version
@@ -427,155 +450,202 @@ uv run engine backtest --csv PATH --output result.json        # backtest com JSO
 
 # Git
 git add -A
-git commit -m "feat(F6): backtester próprio (211 passed)"
-```
+git commit -m "feat(F7e): shadow web (231 passed)"
+7. Como o próximo agente deve começar
+Passo 1 — Confirmar estado atual:
 
----
-
-## 7. Como o próximo agente deve começar
-
-**Passo 1 — Confirmar estado atual:**
-```powershell
+powershell
 uv run pytest -q
-```
-Deve mostrar **~211 passed**. Se não, **PARE** e investigue o que quebrou.
+Deve mostrar 231 passed. Se não, PARE e investigue o que quebrou.
 
-**Passo 2 — Ler este `AI.md` inteiro.** Principalmente seções 4 (decisões) e
-5 (próximos passos F7+).
+Passo 2 — Ler este AI.md inteiro. Principalmente seções 4 (decisões) e
+5 (próximos passos F7f+). Para frontend, leia o ai_front_end.md.
 
-**Passo 3 — Rodar `uv run engine check-config`** para confirmar que o preset
+Passo 3 — Rodar uv run engine check-config para confirmar que o preset
 carrega (7 seções no log).
 
-**Passo 4 — Rodar `uv run engine backtest --csv tests/fixtures/sample_bars.csv`**
+Passo 4 — Rodar uv run engine backtest --csv tests/fixtures/sample_bars.csv
 para confirmar que o backtester funciona.
 
-**Passo 5 — Se algo quebrar:**
-- Rodar `uv run pytest -q -x` (para no primeiro erro)
-- Comparar com `test_golden_v510.py` se for detector, com `test_regions.py` se
-  for região, com `test_presets.py` se for config
-- **NÃO** consertar teste quebrando código de produção. Se um teste antigo
-  quebrou, é bug novo, não do teste.
+Passo 5 — Subir o frontend:
 
----
+powershell
+uv run uvicorn engine.web.app:app --reload --port 8000
+Abra http://localhost:8000 → dashboard deve carregar.
+Abra http://localhost:8000/backtest → form deve carregar.
+Abra http://localhost:8000/shadow → aviso vermelho + form devem carregar.
 
-## 8. Bugs conhecidos / pontos de atenção
+Passo 6 — Se algo quebrar:
 
-### Bug cosmético — `breakout` logado 2×
-Cada teste que chama `_build_intent()` ou `_mk_sessao_com_regiao()` loga `breakout`
-2×. **Não é bug**, é o teste chamando helpers 2×. Cosmético.
+Rodar uv run pytest -q -x (para no primeiro erro)
 
-### `session_shift` usa `TradingWindow(start=time(0,0), end=time(0,0))`
-Gambiarra para não precisar mudar a assinatura. **TODO F7+:** transformar em `@staticmethod`.
+Comparar com test_golden_v510.py se for detector, com test_regions.py se
+for região, com test_presets.py se for config, com test_web.py se for frontend.
 
-### `SimulatedExecutor` não implementa parciais/reforço
-Só SL/TP final. **TODO F8.**
+NÃO consertar teste quebrando código de produção. Se um teste antigo
+quebrou, é bug novo, não do teste.
 
-### `SimulatedExecutor` implementa slippage (F5e), mas **não spread**
-`spread_points` é aceito, mas não aplicado (o `ask`/`bid` já contém spread). **TODO F7+.**
+8. Bugs conhecidos / pontos de atenção
+Bug cosmético — breakout logado 2×
+Cada teste que chama _build_intent() ou _mk_sessao_com_regiao() loga breakout
+2×. Não é bug, é o teste chamando helpers 2×. Cosmético.
 
-### `StrategyRegistry` registra 1 estratégia com `magic=0`
-Hoje só tem 1 preset. Se registrar 2, precisa `magic` diferente. **TODO F9.**
+session_shift usa TradingWindow(start=time(0,0), end=time(0,0))
+Gambiarra para não precisar mudar a assinatura. TODO F8+: transformar em @staticmethod.
 
-### `TradeIntent.volume = 0.0` antes do Executor
-O `TradingSession` **não** calcula volume (precisa de `SymbolInfo`). O
-`Executor` preenche. **Não é bug**, é decisão de design.
+SimulatedExecutor não implementa parciais/reforço
+Só SL/TP final. TODO F8.
 
-### `OrderResult.is_ok` (não `ok`)
-O `OrderResult` tem `@property is_ok`. **Sempre** use `.is_ok` em testes e código.
+SimulatedExecutor implementa slippage (F5e), mas não spread
+spread_points é aceito, mas não aplicado (o ask/bid já contém spread). TODO F8+.
 
-### `mute_open_min` usa `session.window.start`
-O EA usa `InpStartHour` (não a abertura real do pregão). Alinhado com EA.
+StrategyRegistry registra 1 estratégia com magic=0
+Hoje só tem 1 preset. Se registrar 2, precisa magic diferente. TODO F9.
 
-### Datas `naive` vs `aware`
-O `FakeGateway.history_deals` normaliza `since` naive → aware UTC. O
-`RealMT5Gateway.history_deals` também.
+TradeIntent.volume = 0.0 antes do Executor
+O TradingSession não calcula volume (precisa de SymbolInfo). O
+Executor preenche. Não é bug, é decisão de design.
 
-### `engine run` no `--dry-run` cria `engine.db`
-O `cmd_run` usa `SqliteStateStore(args.db or "engine.db")` **inclusive** em
-`--dry-run`. O teste `test_run_dry_run_max_ticks` resolve isso passando
-`db=":memory:"` e fazendo monkeypatch do `SqliteStateStore`.
+OrderResult.is_ok (não ok)
+O OrderResult tem @property is_ok. Sempre use .is_ok em testes e código.
 
-### `TickInfo` e `symbol_info_tick` (F3d)
-- `TickInfo` é um dataclass frozen com `ask`, `bid`, `time` (aware UTC).
+mute_open_min usa session.window.start
+O EA usa InpStartHour (não a abertura real do pregão). Alinhado com EA.
 
-### `engine shadow` **coloca ordens reais**
-- Não é read-only. Use conta **demo** para testar.
+Datas naive vs aware
+O FakeGateway.history_deals normaliza since naive → aware UTC. O
+RealMT5Gateway.history_deals também.
 
-### `ShadowComparer` não é idempotente
-- Cada chamada a `compare()` gera um `ShadowReport` **novo**.
+engine run no --dry-run cria engine.db
+O cmd_run usa SqliteStateStore(args.db or "engine.db") inclusive em
+--dry-run. O teste test_run_dry_run_max_ticks resolve isso passando
+db=":memory:" e fazendo monkeypatch do SqliteStateStore.
 
-### Parciais: `place_partial_orders` chama `symbol_info` de novo
-- Não é bug, é decisão de design.
+TickInfo e symbol_info_tick (F3d)
+TickInfo é um dataclass frozen com ask, bid, time (aware UTC).
 
-### `_infer_tier_from_comment` depende do comment `engine_partial_N`
-- Se o `Executor` mudar o formato do comment, os dois quebram juntos.
+engine shadow coloca ordens reais
+Não é read-only. Use conta demo para testar. A rota web /shadow (F7e) NÃO coloca ordens (usa ShadowComparer read-only).
 
-### Reforço: `place_reentry_exits` usa `comment="engine_reentry_sl"` e `is_stop=True`
-- O `FakeGateway` usa `is_stop` (F5e).
+ShadowComparer não é idempotente
+Cada chamada a compare() gera um ShadowReport novo.
 
-### Multi-estratégia: `--strategies` e `preset.strategy`
-- O `cmd_run` registra o preset principal com `name = preset.strategy`.
-- `--strategies=A,B` usa `preset.strategy`. **TODO F9:** aceitar `preset.name` também.
+Parciais: place_partial_orders chama symbol_info de novo
+Não é bug, é decisão de design.
 
-### `Backtester` — aproximação de ticks
-- Como o CSV só tem candles, o `Backtester` gera 2 ticks por candle (open e close).
-- **Não** simula o caminho intra-candle (o candle pode ter tocado SL/TP em qualquer ponto entre open e close).
-- **TODO F8:** parciais/reforço no simulador melhoram isso.
+_infer_tier_from_comment depende do comment engine_partial_N
+Se o Executor mudar o formato do comment, os dois quebram juntos.
 
-### `Backtester` — parciais/reforço não são simulados
-- O `SimulatedExecutor` só tem SL/TP final.
-- **TODO F8.**
+Reforço: place_reentry_exits usa comment="engine_reentry_sl" e is_stop=True
+O FakeGateway usa is_stop (F5e).
 
-### `engine backtest` — sem trades no fixture
-- `tests/fixtures/sample_bars.csv` tem 10 candles. O detector precisa de 180 para o z-score. Portanto, **0 trades**. Para ver trades, use um CSV com 200+ candles.
+Multi-estratégia: --strategies e preset.strategy
+O cmd_run registra o preset principal com name = preset.strategy.
 
----
+--strategies=A,B usa preset.strategy. TODO F9: aceitar preset.name também.
 
-## 9. Referências externas
+Backtester — aproximação de ticks
+Como o CSV só tem candles, o Backtester gera 2 ticks por candle (open e close).
 
-- **EA de referência:** `StdDevVolumeBreakout.mq5` v4.60 (Renan) — não está
-  no repositório, mas é a fonte de verdade. Se precisar comparar, pedir ao autor.
-- **Indicador companheiro:** `VolumeStdBarPainter.mq5` v3.00 (multi-nível) e
-  v1.00 (simples).
-- **Script golden:** `z_dump.mq5` — exporta candles + z-score para CSV
-  (usado para gerar `tests/fixtures/v510_expected.csv`).
-- **Plano completo:** `Plano_Motor_Trading_Python.md` (se existir no repo).
-- **README:** `README.md` na raiz (documenta estado atual + roadmap).
+Não simula o caminho intra-candle (o candle pode ter tocado SL/TP em qualquer ponto entre open e close).
 
----
+TODO F8: parciais/reforço no simulador melhoram isso.
 
-## 10. Regras de ouro (para a IA que continuar)
+Backtester — parciais/reforço não são simulados
+O SimulatedExecutor só tem SL/TP final.
 
-1. **Rode `uv run pytest -q` antes e depois de CADA mudança.** Se quebrar,
-   reverta imediatamente.
-2. **Nunca substitua arquivo inteiro sem antes dar uma olhada na versão atual.**
-   O problema mais comum no histórico do projeto foi **colar código novo em cima
-   do antigo sem remover**, gerando `SyntaxError` (ex: `from __future__` no
-   meio do arquivo, `def` duplicado na mesma linha).
-3. **Prefira `Substituir` em vez de `Colar em cima`** quando eu mandar um
-   patch de arquivo.
-4. **Não mexa em `domain/` sem rodar `test_golden_v510.py` + `test_regions.py`.**
-   Esses dois são a fundação.
-5. **Não invente campos no preset sem consultar o `.mq5`.** Cada campo tem um
-   `# InpXxx` correspondente.
-6. **Sempre use `OrderResult.is_ok`** (não `.ok`).
-7. **Sempre rode `uv run engine check-config`** depois de mexer no YAML.
-8. **Quando em dúvida, pergunte.** O autor tem contexto do EA e sabe quando
-   uma mudança quebra paridade.
-9. **`ExecutionResult.ok` é alias de `is_ok`** — mantenha as duas properties.
-10. **Datas:** sempre `aware UTC` nos métodos públicos. Normalize `since` naive
-    para aware antes de comparar.
-11. **`engine shadow` coloca ordens reais.** Só rode em demo até validar.
-12. **`ShadowComparer` não acessa MT5.** Só `engine shadow` acessa.
-13. **Parciais no `Poller`:** o comment do `Executor` é `engine_partial_N`. Se
-    mudar, o `Poller` e o `TradingSession` quebram juntos.
-14. **Reforço no `Poller`:** o comment do `Executor` é `engine_reentry` (entrada)
-    e `engine_reentry_tp`/`engine_reentry_sl` (saídas). O `is_stop` do `OrderRequest`
-    é `True` no SL.
-15. **Calendário B3:** `B3Calendar` tem feriados hardcoded 2026-2027. Se rodar
-    em 2028+, adicione à lista.
-16. **`session_shift`:** usa `TradingWindow(start=time(0,0), end=time(0,0))` —
-    gambiarra. F7+ transforma em `@staticmethod`.
-17. **Multi-estratégia:** `--strategies` usa `preset.strategy` (não `preset.name`).
-18. **F0→F6 está 100% completo.** Próximas fases (F7+) são opcionais:
-    validação em demo, parciais/reforço no simulador, multi-símbolo, observabilidade.
+TODO F8.
+
+engine backtest — sem trades no fixture
+tests/fixtures/sample_bars.csv tem 10 candles. O detector precisa de 180 para o z-score. Portanto, 0 trades. Para ver trades, use um CSV com 200+ candles.
+
+Frontend (F7) — Bugs resolvidos e pontos de atenção
+TemplateNotFound: partials começam com _ (_backtest.html), páginas não (backtest.html). O app.py pede a página; o router pede o partial.
+
+TemplateResponse: TemplateResponse(request=request, name="...", context={...}) (Starlette ≥ 0.30). O request é obrigatório.
+
+Código de teste no app.py: remover test_* do app.py (só em tests/test_web.py).
+
+HTMX upload: hx-encoding="multipart/form-data" é obrigatório.
+
+HTMX JSON: hx-ext="json-enc" para formulários de config.
+
+TradeIntent no routes/shadow.py: usar _ShadowTrade (duck typing) em vez de TradeIntent inteiro.
+
+SSE (F7f): StreamingResponse(media_type="text/event-stream") é obrigatório.
+
+TestClient: with TestClient(app) as client: dispara o lifespan.
+
+9. Referências externas
+EA de referência: StdDevVolumeBreakout.mq5 v4.60 (Renan) — não está
+no repositório, mas é a fonte de verdade. Se precisar comparar, pedir ao autor.
+
+Indicador companheiro: VolumeStdBarPainter.mq5 v3.00 (multi-nível) e
+v1.00 (simples).
+
+Script golden: z_dump.mq5 — exporta candles + z-score para CSV
+(usado para gerar tests/fixtures/v510_expected.csv).
+
+Plano completo: Plano_Motor_Trading_Python.md (se existir no repo).
+
+README: README.md na raiz (documenta estado atual + roadmap).
+
+Frontend: ai_front_end.md (FastAPI, HTMX, templates, SSE).
+
+10. Regras de ouro (para a IA que continuar)
+Rode uv run pytest -q antes e depois de CADA mudança. Se quebrar,
+reverta imediatamente. (Hoje: 231 passed.)
+
+Nunca substitua arquivo inteiro sem antes dar uma olhada na versão atual.
+O problema mais comum no histórico do projeto foi colar código novo em cima
+do antigo sem remover, gerando SyntaxError (ex: from __future__ no
+meio do arquivo, def duplicado na mesma linha).
+
+Prefira Substituir em vez de Colar em cima quando eu mandar um
+patch de arquivo.
+
+Não mexa em domain/ sem rodar test_golden_v510.py + test_regions.py.
+Esses dois são a fundação.
+
+Não invente campos no preset sem consultar o .mq5. Cada campo tem um
+# InpXxx correspondente.
+
+Sempre use OrderResult.is_ok (não .ok).
+
+Sempre rode uv run engine check-config depois de mexer no YAML.
+
+Quando em dúvida, pergunte. O autor tem contexto do EA e sabe quando
+uma mudança quebra paridade.
+
+ExecutionResult.ok é alias de is_ok — mantenha as duas properties.
+
+Datas: sempre aware UTC nos métodos públicos. Normalize since naive
+para aware antes de comparar.
+
+engine shadow coloca ordens reais. Só rode em demo até validar.
+
+ShadowComparer não acessa MT5. Só engine shadow acessa. A rota web
+/shadow também acessa (read-only).
+
+Parciais no Poller: o comment do Executor é engine_partial_N. Se
+mudar, o Poller e o TradingSession quebram juntos.
+
+Reforço no Poller: o comment do Executor é engine_reentry (entrada)
+e engine_reentry_tp/engine_reentry_sl (saídas). O is_stop do OrderRequest
+é True no SL.
+
+Calendário B3: B3Calendar tem feriados hardcoded 2026-2027. Se rodar
+em 2028+, adicione à lista.
+
+session_shift: usa TradingWindow(start=time(0,0), end=time(0,0)) —
+gambiarra. F8+ transforma em @staticmethod.
+
+Multi-estratégia: --strategies usa preset.strategy (não preset.name).
+
+Frontend: para detalhes de HTMX, templates, rotas e SSE, leia o
+ai_front_end.md. O app.py e os routers nunca duplicam lógica do
+backend — só chamam engine.application.*.
+
+F0→F6 + F7a→F7e está 100% completo. Próximas fases: F7f (SSE),
+F7g (testes web), F8 (parciais/reforço no simulador), F9 (estratégias
+adicionais), F10 (multi-símbolo), F11 (observabilidade).

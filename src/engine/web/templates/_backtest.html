@@ -1,0 +1,121 @@
+{#
+  Partial de backtest (F7d).
+  Renderizado por:
+    - GET /backtest  (inicial, via HTMX)
+    - POST /api/backtest  (após rodar, com resultado ou erro)
+  Recebe:
+    - result: dict | None (summary do backtest)
+    - error: str | None
+#}
+
+{% if error %}
+  <article style="background: #3a1a1a; border-color: #e74c3c;">
+    <strong class="status-error">✗ Erro:</strong> {{ error }}
+  </article>
+{% endif %}
+
+{% if result %}
+  <div class="card" style="background: #1a3a2a; border-color: #2ecc71;">
+    <h3>Resultado do Backtest</h3>
+    <div class="grid-3">
+      <div class="metric">
+        <span class="metric-label">Candles</span>
+        <span class="metric-value">{{ result.n_bars }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Trades</span>
+        <span class="metric-value">{{ result.n_trades }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Win Rate</span>
+        <span class="metric-value">{{ "%.2f" | format(result.win_rate * 100) }}%</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">PnL Total</span>
+        <span class="metric-value">
+          {% if result.total_pnl > 0 %}
+            <span class="status-ok">+{{ "%.2f" | format(result.total_pnl) }}</span>
+          {% elif result.total_pnl < 0 %}
+            <span class="status-error">{{ "%.2f" | format(result.total_pnl) }}</span>
+          {% else %}
+            0.00
+          {% endif %}
+        </span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Return</span>
+        <span class="metric-value">
+          {% if result.return_pct > 0 %}
+            <span class="status-ok">+{{ "%.2f" | format(result.return_pct) }}%</span>
+          {% elif result.return_pct < 0 %}
+            <span class="status-error">{{ "%.2f" | format(result.return_pct) }}%</span>
+          {% else %}
+            0.00%
+          {% endif %}
+        </span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Sharpe</span>
+        <span class="metric-value">{{ "%.2f" | format(result.sharpe) }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Max Drawdown</span>
+        <span class="metric-value">{{ "%.2f" | format(result.max_drawdown_pct) }}%</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Profit Factor</span>
+        <span class="metric-value">{{ result.profit_factor }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Avg Win / Loss</span>
+        <span class="metric-value">
+          {{ "%.2f" | format(result.avg_win) }} / {{ "%.2f" | format(result.avg_loss) }}
+        </span>
+      </div>
+    </div>
+    <p style="font-size: 0.8rem; color: var(--pico-muted-color);">
+      Período: {{ result.start[:10] }} a {{ result.end[:10] }}
+    </p>
+  </div>
+{% endif %}
+
+<form hx-post="/api/backtest"
+      hx-target="#backtest-form"
+      hx-swap="outerHTML"
+      hx-encoding="multipart/form-data"
+      id="backtest-form">
+
+  <div class="card">
+    <h3>Upload de CSV</h3>
+    <div class="grid-3">
+      <label>
+        Arquivo CSV
+        <input type="file" name="file" accept=".csv" required>
+      </label>
+      <label>
+        Saldo inicial
+        <input type="number" name="initial_balance" value="100000" step="1000" min="1000">
+      </label>
+      <label>
+        Slippage (pts)
+        <input type="number" name="slippage" value="0" step="0.1" min="0">
+      </label>
+      <label>
+        Spread (pts)
+        <input type="number" name="spread" value="0" step="0.1" min="0">
+      </label>
+    </div>
+    <div class="grid-3">
+      <label>
+        Data inicial (opcional)
+        <input type="date" name="from_date">
+      </label>
+      <label>
+        Data final (opcional)
+        <input type="date" name="to_date">
+      </label>
+    </div>
+  </div>
+
+  <button type="submit">Rodar backtest</button>
+</form>

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Shadow — Trading Engine{% endblock %}
+
+{% block content %}
+  <h2>Shadow (Modo Sombra)</h2>
+
+  <article style="background: #3a1a1a; border-color: #e74c3c; margin-bottom: 1.5rem;">
+    <strong class="status-error">⚠️ Atenção:</strong>
+    Esta página <strong>apenas compara</strong> deals já executados no MT5
+    (read-only). Para rodar o comparador em tempo real com ordens reais,
+    use a CLI:
+    <code>uv run engine shadow --ea-magic &lt;N&gt; --duration &lt;min&gt;</code>
+    em conta <strong>DEMO</strong>.
+  </article>
+
+  <div id="shadow-form"
+       hx-get="/api/shadow"
+       hx-trigger="load">
+    <article class="card"><p>Carregando formulário...</p></article>
+  </div>
+{% endblock %}

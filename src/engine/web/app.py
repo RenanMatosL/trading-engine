@@ -60,6 +60,36 @@ async def dashboard(request: Request):
     )
 
 
+@app.get("/config", response_class=HTMLResponse)
+async def config_page(request: Request):
+    """Página de configuração do preset."""
+    return templates.TemplateResponse(
+        request=request,
+        name="config.html",
+        context={"title": "Config"},
+    )
+
+
+@app.get("/backtest", response_class=HTMLResponse)
+async def backtest_page(request: Request):
+    """Página de backtest."""
+    return templates.TemplateResponse(
+        request=request,
+        name="backtest.html",
+        context={"title": "Backtest"},
+    )
+
+
+@app.get("/shadow", response_class=HTMLResponse)
+async def shadow_page(request: Request):
+    """Página de shadow (modo sombra)."""
+    return templates.TemplateResponse(
+        request=request,
+        name="shadow.html",
+        context={"title": "Shadow"},
+    )
+
+
 #+------------------------------------------------------------------+
 #| Rotas API (JSON / HTML negociado)                                |
 #+------------------------------------------------------------------+
@@ -132,15 +162,6 @@ async def api_status(request: Request):
 
     return response
 
-@app.get("/config", response_class=HTMLResponse)
-async def config_page(request: Request):
-    """Página de configuração do preset."""
-    return templates.TemplateResponse(
-        request=request,
-        name="config.html",
-        context={"title": "Config"},
-    )
-
 
 #+------------------------------------------------------------------+
 #| Static (CSS/JS)                                                  |
@@ -149,13 +170,44 @@ if _STATIC_DIR.exists():
     from fastapi.staticfiles import StaticFiles
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
+
 #+------------------------------------------------------------------+
-#| Routers (F7b-2)                                                  |
+#| Routers (F7b-2 / F7d / F7e)                                      |
 #+------------------------------------------------------------------+
 from engine.web.routes import equity as equity_routes
 from engine.web.routes import trades as trades_routes
 from engine.web.routes import preset as preset_routes
+from engine.web.routes import backtest as backtest_routes
+from engine.web.routes import shadow as shadow_routes  
 
 app.include_router(trades_routes.router)
 app.include_router(equity_routes.router)
 app.include_router(preset_routes.router)  
+app.include_router(backtest_routes.router)
+app.include_router(shadow_routes.router)               
+
+#+------------------------------------------------------------------+
+#| F7e — /shadow                                                   |
+#+------------------------------------------------------------------+
+def test_shadow_page(client, preset_file):
+    """GET /shadow renderiza a página."""
+    r = client.get("/shadow")
+    assert r.status_code == 200
+    assert "Shadow" in r.text
+
+
+def test_api_shadow_get(client, preset_file):
+    """GET /api/shadow retorna o partial com o form."""
+    r = client.get("/api/shadow")
+    assert r.status_code == 200
+    assert 'hx-post="/api/shadow"' in r.text
+
+
+def test_api_shadow_post_invalid(client, preset_file):
+    """POST /api/shadow com ea_magic inválido → 400."""
+    r = client.post(
+        "/api/shadow",
+        data={"ea_magic": "0", "py_magic": "1", "duration_min": "60"},
+    )
+    assert r.status_code == 400
+    assert "error" in r.json()

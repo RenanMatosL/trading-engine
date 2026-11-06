@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block title %}Backtest — Trading Engine{% endblock %}
+
+{% block content %}
+  <h2>Backtest</h2>
+  <p>Faça upload de um CSV de candles M1 para rodar o backtester.</p>
+
+  <div id="backtest-form">
+    {% include "_backtest.html" %}
+  </div>
+{% endblock %}
