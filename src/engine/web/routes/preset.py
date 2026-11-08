@@ -36,12 +36,9 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
 def _get_preset_path(request: Request) -> Path:
-    # Usa preset_path do state (sobrescrito pelo fixture nos testes)
-    preset_path = getattr(request.app.state, "preset_path", None)
-    if preset_path is None:
-        settings: EngineSettings = request.app.state.settings
-        return Path(settings.preset)
-    return Path(preset_path)
+    """Retorna SEMPRE o caminho absoluto do YAML default."""
+    settings: EngineSettings = request.app.state.settings
+    return Path(settings.preset).resolve()
 
 
 def _serialize(preset: StdDevV510Preset) -> dict:
@@ -51,10 +48,7 @@ def _serialize(preset: StdDevV510Preset) -> dict:
 
 @router.get("")
 async def get_preset(request: Request):
-    """Retorna o preset atual (JSON ou HTML com formulário).
-
-    Se `HX-Request: true`, renderiza `_preset.html` (formulário).
-    """
+    """Retorna o preset atual (JSON ou HTML com formulário)."""
     preset_path = _get_preset_path(request)
     try:
         preset = load_preset(preset_path)
@@ -82,10 +76,7 @@ async def get_preset(request: Request):
 
 @router.post("")
 async def save_preset(request: Request):
-    """Recebe JSON, valida com pydantic, faz backup e salva o YAML.
-
-    Se `HX-Request: true`, retorna `_preset.html` com mensagem de sucesso/erro.
-    """
+    """Recebe JSON, valida com pydantic, faz backup e salva o YAML."""
     preset_path = _get_preset_path(request)
     is_htmx = request.headers.get("hx-request") == "true"
 

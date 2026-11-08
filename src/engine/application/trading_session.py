@@ -270,7 +270,7 @@ class TradingSession:
             )
 
         if det.mute_open_min > 0:
-            session_start = datetime.combine(bar.time.date(), sess.window.start)
+            session_start = datetime.combine(bar.time.date(), sess.window.start, tzinfo=bar.time.tzinfo)
             mute_until = session_start + timedelta(minutes=det.mute_open_min)
             if bar.time < mute_until:
                 return BarResult(
@@ -780,7 +780,7 @@ class TradingSession:
             return True
         if region.bar_time.date() == now.date():
             return True
-        session_start = datetime.combine(now.date(), sess.window.start)
+        session_start = datetime.combine(now.date(), sess.window.start, tzinfo=now.tzinfo)
         return now >= session_start + timedelta(minutes=sess.carry_entry_delay_min)
 
     # ----------------------------------------------------------------

@@ -6,14 +6,72 @@
 <h2>Configuração do Preset</h2>
 
 <p>
-  <em>Edite os parâmetros abaixo e clique em "Salvar preset".
-  O YAML anterior será copiado para <code>.bak</code> antes de salvar.</em>
+  Edite os parâmetros abaixo e clique em <strong>Salvar preset</strong>.
+  O YAML anterior será copiado para <code>.bak</code> antes de salvar.
 </p>
 
-<div id="preset-form"
-     hx-get="/api/preset"
-     hx-trigger="load"
-     hx-swap="innerHTML">
-  <article class="card"><p>Carregando preset...</p></article>
+<div id="preset-container">
+  <article class="card"><p>Carregando formulário...</p></article>
 </div>
+
+<script>
+async function savePreset() {
+    const form = document.getElementById('preset-form');
+    if (!form) {
+        alert('Formulário não encontrado!');
+        return;
+    }
+    const formData = new FormData(form);
+    const data = {};
+
+    for (const [key, value] of formData.entries()) {
+        const parts = key.split('.');
+        let current = data;
+        for (let i = 0; i < parts.length - 1; i++) {
+            current[parts[i]] = current[parts[i]] || {};
+            current = current[parts[i]];
+        }
+        let finalValue = value;
+        if (value === "true") finalValue = true;
+        else if (value === "false") finalValue = false;
+        else if (!isNaN(value) && value.trim() !== "") finalValue = Number(value);
+        current[parts[parts.length - 1]] = finalValue;
+    }
+
+    if (data.session && data.session.window) {
+        if (data.session.window.start && data.session.window.start.length === 5) {
+            data.session.window.start += ":00";
+        }
+        if (data.session.window.end && data.session.window.end.length === 5) {
+            data.session.window.end += ":00";
+        }
+    }
+
+    try {
+        const response = await fetch('/api/preset', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'HX-Request': 'true'
+            },
+            body: JSON.stringify(data)
+        });
+
+        const html = await response.text();
+        // Substitui a div do formulário pelo HTML retornado
+        document.getElementById('preset-container').innerHTML = html;
+    } catch (error) {
+        alert("Erro ao salvar: " + error);
+    }
+}
+
+// Carrega o formulário ao abrir a página
+document.addEventListener('DOMContentLoaded', () => {
+    const container = document.getElementById('preset-container');
+    fetch('/api/preset', { headers: { 'HX-Request': 'true' } })
+        .then(r => r.text())
+        .then(html => { container.innerHTML = html; })
+        .catch(err => { container.innerHTML = `<p>Erro: ${err}</p>`; });
+});
+</script>
 {% endblock %}

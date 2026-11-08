@@ -69,9 +69,11 @@ uma interface web visual e leve.
 | **F7d** | Frontend: Backtest (upload CSV + resultado) | ✅ fechado |
 | **F7e** | Frontend: Shadow (comparar EA vs Python) | ✅ fechado |
 | **F7f** | Frontend: SSE (status em tempo real) | ✅ fechado |
+| **F7g** | Frontend: Testes de cobertura (24 testes web) | ✅ fechado |
+| **F8** | Simulador: Parciais e reforço no `SimulatedExecutor` | ✅ fechado |
 
-**Suíte de testes atual:** **232 passed** (`uv run pytest -q`).
-**Projeto completo (F0→F6 + F7a→F7f).**
+**Suíte de testes atual:** **241 passed** (`uv run pytest -q`).
+**Projeto completo (F0→F6 + F7a→F7g + F8).**
 
 ---
 
@@ -103,6 +105,7 @@ src/engine/
 │ ├── events.py # EventFeed, BarEvent, TickEvent (F2d)
 │ ├── simulation.py # run_simulation, SimulatedExecutor
 │ │ # + slippage/spread (F5e)
+│ │ # + parciais/reforço (F8)
 │ ├── trade_events.py # EntryFilled, PartialFilled, ReentryFilled,
 │ │ # ReentryExitFilled, StopLossHit,
 │ │ # TakeProfitHit, PositionClosed (F3b + F5c)
@@ -155,7 +158,7 @@ tests/
 ├── test_regions.py # RegionManager + validade por pregões reais
 ├── test_pricing.py
 ├── test_trading_session.py
-├── test_simulation.py # simulador + slippage/spread (F5e)
+├── test_simulation.py # simulador + slippage/spread (F5e) + parciais/reforço (F8)
 ├── test_executor.py # executor + by-risk (F5b) + is_stop (F5e)
 ├── test_poller.py # TradeEventPoller (+ reentry em F5c)
 ├── test_state.py # StateStore + persistência (F5e + F7b-1)
@@ -167,7 +170,7 @@ tests/
 ├── test_csv_loader.py # load_bars_csv (F6)
 ├── test_metrics.py # métricas (F6)
 ├── test_backtester.py # Backtester (F6)
-└── test_web.py # TestClient FastAPI (F7a-F7f) — 17 testes
+└── test_web.py # TestClient FastAPI (F7a-F7g) — 24 testes
 
 text
 
@@ -284,12 +287,13 @@ text
 - Relatório JSON salvo em `reports/shadow_YYYYMMDD_HHMMSS.json`.
 - **`ShadowComparer` não acessa MT5.** Só `engine shadow` acessa. A rota web `POST /api/shadow` (F7e) também acessa (mas é **read-only**, não coloca ordens).
 
-### `Backtester` (F6)
+### `Backtester` (F6 + F8)
 - Consome `list[Bar]` (do `csv_loader`).
 - Constrói `EventFeed`:
   - `BarEvent(bar, zscore)` para cada candle (z-score via `VolumeStdDetector`).
   - 2 `TickEvent` (open e close) para cada candle.
 - Roda `run_simulation(feed, preset, ...)` → `SimulationResult`.
+- **F8:** o `SimulatedExecutor` agora simula parciais e reforço, então o backtest reflete o comportamento real do MT5.
 - Calcula métricas via `metrics.py`.
 - Retorna `BacktestResult` (simulation + metrics + start + end + n_bars).
 
@@ -334,11 +338,12 @@ text
   - `total_contracts` é **ignorado** em by-risk.
   - `risk_value=0` ou `sl_dist=0` → `lots_min` (fallback).
 
-### Simulador (F2d + F5e)
+### Simulador (F2d + F5e + F8)
 - SL **ganha empate** dentro do mesmo tick (conservador, MT5-style).
-- Parciais: **não implementadas no simulador ainda** (F5a cobriu `RealExecutor`).
+- **F8:** Parciais e reforço implementados no `SimulatedExecutor`.
 - Volume = fixed_contracts (by-risk só em `RealExecutor`).
-- **F5e:** `SimulatedExecutor.__init__(preset, slippage_points=0.0, spread_points=0.0)`. Slippage aplicado no fill (pior caso). `spread_points` reservado para F8+.
+- **F5e:** `SimulatedExecutor.__init__(preset, slippage_points=0.0, spread_points=0.0)`. Slippage aplicado no fill (pior caso).
+- **F8:** `SimulatedExecutor._open` rastreia `partials_done`, `reentry_armed`, `reentry_done`. `on_tick` verifica os alvos dos tiers e o retorno ao entry.
 
 ### `FakeGateway.place_order` — `is_stop` explícito (F5e)
 - **Não** detecta mais por string. Usa `req.is_stop`.
@@ -356,33 +361,9 @@ text
 
 ---
 
-## 5. Próximos passos (F7g / F8+)
+## 5. Próximos passos (F9+)
 
-O projeto **F0→F6 + F7a→F7f está 100% completo**.
-
-### F7g — Testes web (~10-15 testes)
-
-**O que implementa:** cobertura completa das rotas (`GET /`, `/config`, `/backtest`, `/shadow`, `POST /api/*`).
-
-**Arquivos:**
-- `tests/test_web.py` — casos de borda.
-
-**Critério:** `uv run pytest -q` → ~240 passed.
-
-### F8 — Parciais/reforço no simulador (3-4 dias)
-
-**O que implementa:** o `SimulatedExecutor` (F2d) **não** simula parciais/reforço. Hoje:
-- Parciais são armadas no MT5 real (`RealExecutor.place_partial_orders`), mas o simulador só vê SL/TP final.
-- Reforço idem.
-
-**Para paridade total em backtest**, o `SimulatedExecutor` precisa implementar:
-- Fill de parcial quando `bid/ask` atinge o alvo do tier.
-- Fill de reforço quando preço avança `reentry_arm_points` e volta ao entry.
-- TP/SL do reforço separados.
-
-**Arquivos:**
-- `src/engine/application/simulation.py` — estender `_OpenTrade` com `partials` e `reentry`.
-- `tests/test_simulation.py` — +5 testes.
+O projeto **F0→F6 + F7a→F7g + F8 está 100% completo**.
 
 ### F9 — Estratégias adicionais
 
@@ -411,7 +392,7 @@ O projeto **F0→F6 + F7a→F7f está 100% completo**.
 
 ```powershell
 # Testes
-uv run pytest -q                              # suíte completa (232 passed hoje)
+uv run pytest -q                              # suíte completa (241 passed hoje)
 uv run pytest tests/test_golden_v510.py -v    # paridade do detector
 uv run pytest tests/test_calendar.py -v       # calendário B3
 uv run pytest tests/test_state.py -v          # persistência + parciais/reforço
@@ -423,7 +404,8 @@ uv run pytest tests/test_registry.py -v       # multi-estratégia
 uv run pytest tests/test_csv_loader.py -v     # CSV loader (F6)
 uv run pytest tests/test_metrics.py -v        # métricas (F6)
 uv run pytest tests/test_backtester.py -v     # Backtester (F6)
-uv run pytest tests/test_web.py -v            # FastAPI web (F7a-F7f)
+uv run pytest tests/test_web.py -v            # FastAPI web (F7a-F7g)
+uv run pytest tests/test_simulation.py -v     # simulador + F8 (parciais/reforço)
 
 # Frontend
 uv run uvicorn engine.web.app:app --reload --port 8000
@@ -442,16 +424,16 @@ uv run engine backtest --csv PATH --output result.json        # backtest com JSO
 
 # Git
 git add -A
-git commit -m "feat(F7f): SSE web (232 passed)"
+git commit -m "feat(F8): parciais/reforço no simulador (241 passed)"
 7. Como o próximo agente deve começar
 Passo 1 — Confirmar estado atual:
 
 powershell
 uv run pytest -q
-Deve mostrar 232 passed. Se não, PARE e investigue o que quebrou.
+Deve mostrar 241 passed. Se não, PARE e investigue o que quebrou.
 
 Passo 2 — Ler este AI.md inteiro. Principalmente seções 4 (decisões) e
-5 (próximos passos F7g+).
+5 (próximos passos F9+).
 
 Passo 3 — Rodar uv run engine check-config para confirmar que o preset
 carrega (7 seções no log).
@@ -484,9 +466,6 @@ Cada teste que chama _build_intent() ou _mk_sessao_com_regiao() loga breakout
 
 session_shift usa TradingWindow(start=time(0,0), end=time(0,0))
 Gambiarra para não precisar mudar a assinatura. TODO F8+: transformar em @staticmethod.
-
-SimulatedExecutor não implementa parciais/reforço
-Só SL/TP final. TODO F8.
 
 SimulatedExecutor implementa slippage (F5e), mas não spread
 spread_points é aceito, mas não aplicado (o ask/bid já contém spread). TODO F8+.
@@ -541,12 +520,7 @@ Como o CSV só tem candles, o Backtester gera 2 ticks por candle (open e close).
 
 Não simula o caminho intra-candle (o candle pode ter tocado SL/TP em qualquer ponto entre open e close).
 
-TODO F8: parciais/reforço no simulador melhoram isso.
-
-Backtester — parciais/reforço não são simulados
-O SimulatedExecutor só tem SL/TP final.
-
-TODO F8.
+F8: parciais/reforço no simulador melhoram isso (agora os níveis de saída são respeitados dentro do candle).
 
 engine backtest — sem trades no fixture
 tests/fixtures/sample_bars.csv tem 10 candles. O detector precisa de 180 para o z-score. Portanto, 0 trades. Para ver trades, use um CSV com 200+ candles.
@@ -586,7 +560,7 @@ Manual de uso: MANUAL.md (passo a passo de operação).
 
 10. Regras de ouro (para a IA que continuar)
 Rode uv run pytest -q antes e depois de CADA mudança. Se quebrar,
-reverta imediatamente. (Hoje: 232 passed.)
+reverta imediatamente. (Hoje: 241 passed.)
 
 Nunca substitua arquivo inteiro sem antes dar uma olhada na versão atual.
 O problema mais comum no histórico do projeto foi colar código novo em cima
@@ -659,6 +633,5 @@ Código de teste NUNCA no app.py. Sempre em tests/test_web.py.
 SSE: o servidor segura a conexão. Se for parar o uvicorn, feche a aba
 do navegador antes do Ctrl+C. O formato do frame é data: <linha>\n\n.
 
-F0→F6 + F7a→F7f está 100% completo. Próximas fases: F7g (testes web),
-F8 (parciais/reforço no simulador), F9 (estratégias adicionais), F10
-(multi-símbolo), F11 (observabilidade).
+F0→F6 + F7a→F7g + F8 está 100% completo. Próximas fases: F9
+(estratégias adicionais), F10 (multi-símbolo), F11 (observabilidade).

@@ -13,6 +13,7 @@ from engine.application.status import get_status
 from engine.config.presets import load_preset
 from engine.config.settings import EngineSettings
 from engine.web.deps import get_gateway, get_settings
+from engine.web.deps import shutdown_gateway, startup_gateway
 from engine.web.schemas import (
     AccountSchema,
     DetectorSchema,
@@ -29,13 +30,9 @@ _STATIC_DIR = _BASE_DIR / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from engine.web.deps import shutdown_gateway, startup_gateway
-
     settings = EngineSettings()
     app.state.settings = settings
     app.state.db_path = "engine.db"
-    if not hasattr(app.state, "preset_path"):    
-        app.state.preset_path = settings.preset
     app.state.preset_path = settings.preset
     app.state.gateway = await startup_gateway(settings)
     try:

@@ -1,287 +1,296 @@
-{#
-  Formulário de edição do preset (F7c).
-  Renderizado por:
-    - GET  /api/preset  (inicial)
-    - POST /api/preset  (após salvar/erro)
-  Recebe:
-    - preset: dict (do YAML)
-    - saved: bool (True = salvou)
-    - error: str | None
-#}
+{# Partial do formulário de preset (F7c). #}
 
-<form hx-post="/api/preset"
-      hx-ext="json-enc"
-      hx-target="#preset-form"
-      hx-swap="outerHTML"
-      id="preset-form">
+{% if error %}
+  <article style="background: #3a1a1a; border-color: #e74c3c;">
+    <strong class="status-error">✗ Erro:</strong> {{ error }}
+  </article>
+{% endif %}
 
-  {% if saved %}
-    <article style="background: #1a3a2a; border-color: #2ecc71;">
-      <strong class="status-ok">✓ Preset salvo com sucesso.</strong>
-    </article>
-  {% endif %}
+{% if saved %}
+  <article style="background: #1a3a2a; border-color: #2ecc71;">
+    <strong class="status-ok">✓ Preset salvo com sucesso.</strong>
+  </article>
+{% endif %}
 
-  {% if error %}
-    <article style="background: #3a1a1a; border-color: #e74c3c;">
-      <strong class="status-error">✗ Erro:</strong> {{ error }}
-    </article>
-  {% endif %}
+<form id="preset-form" onsubmit="event.preventDefault(); savePreset();">
 
-  {# ---------- IDENTIFICAÇÃO ---------- #}
+  <!-- Identificação -->
   <div class="card">
     <h3>Identificação</h3>
     <div class="grid-3">
-      <label>
+      <label title="Nome do preset (identificador)">
         Nome
-        <input name="name" value="{{ preset.name }}" required>
+        <input type="text" name="name" value="{{ preset.name if preset else '' }}" required>
       </label>
-      <label>
+      <label title="Nome da estratégia (ex: stddev_v510)">
         Estratégia
-        <input name="strategy" value="{{ preset.strategy }}" readonly>
+        <input type="text" name="strategy" value="{{ preset.strategy if preset else '' }}" required>
       </label>
     </div>
   </div>
 
-  {# ---------- DETECTOR ---------- #}
+  <!-- Detector -->
   <div class="card">
     <h3>Detector (z-score de volume)</h3>
     <div class="grid-3">
-      <label>
+      <label title="Janela de candles para calcular a média e o desvio padrão (InpLen do EA).">
         Length (candles)
-        <input type="number" name="detector.length"
-               value="{{ preset.detector.length }}" min="2" required>
+        <input type="number" name="detector.length" value="{{ preset.detector.length if preset else 180 }}" required>
       </label>
-      <label>
+      <label title="Z-score mínimo para considerar o volume anormal (InpStdRef do EA). Quanto menor, mais sinais.">
         Std Ref (z-score mínimo)
-        <input type="number" name="detector.std_ref" step="0.1"
-               value="{{ preset.detector.std_ref }}" min="0.1" required>
+        <input type="number" step="0.1" name="detector.std_ref" value="{{ preset.detector.std_ref if preset else 4.0 }}" required>
       </label>
-      <label>
+      <label title="Fonte do volume: Tick (InpVolumeSource=0) ou Real (InpVolumeSource=1).">
         Volume Source
         <select name="detector.volume_source">
-          <option value="tick" {% if preset.detector.volume_source == "tick" %}selected{% endif %}>Tick</option>
-          <option value="real" {% if preset.detector.volume_source == "real" %}selected{% endif %}>Real</option>
+          <option value="tick" {% if preset and preset.detector.volume_source == 'tick' %}selected{% endif %}>Tick</option>
+          <option value="real" {% if preset and preset.detector.volume_source == 'real' %}selected{% endif %}>Real</option>
         </select>
       </label>
-      <label>
+      <label title="Timeframe dos candles (M1, M5, M15).">
         Timeframe
         <select name="detector.timeframe">
-          {% for tf in ["M1", "M5", "M15", "M30", "H1"] %}
-            <option value="{{ tf }}" {% if preset.detector.timeframe == tf %}selected{% endif %}>{{ tf }}</option>
-          {% endfor %}
+          <option value="M1" {% if preset and preset.detector.timeframe == 'M1' %}selected{% endif %}>M1</option>
+          <option value="M5" {% if preset and preset.detector.timeframe == 'M5' %}selected{% endif %}>M5</option>
+          <option value="M15" {% if preset and preset.detector.timeframe == 'M15' %}selected{% endif %}>M15</option>
         </select>
       </label>
-      <label>
+    </div>
+    <div class="grid-3">
+      <label title="Minutos iniciais após a abertura em que o motor não opera (InpMuteOpenMin).">
         Mute Open (min)
-        <input type="number" name="detector.mute_open_min"
-               value="{{ preset.detector.mute_open_min }}" min="0">
+        <input type="number" name="detector.mute_open_min" value="{{ preset.detector.mute_open_min if preset else 10 }}" required>
       </label>
     </div>
   </div>
 
-  {# ---------- SESSÃO ---------- #}
+  <!-- Sessão -->
   <div class="card">
     <h3>Sessão</h3>
     <div class="grid-3">
-      <label>
-        Início (HH:MM)
-        <input name="session.window.start" value="{{ preset.session.window.start }}" placeholder="09:00">
+      <label title="Horário de início da sessão de negociação (InpStartHour).">
+        Início
+        <input type="time" name="session.window.start" value="{{ preset.session.window.start if preset else '09:00' }}" required>
       </label>
-      <label>
-        Fim (HH:MM)
-        <input name="session.window.end" value="{{ preset.session.window.end }}" placeholder="17:30">
+      <label title="Horário de fim da sessão de negociação (InpEndHour).">
+        Fim
+        <input type="time" name="session.window.end" value="{{ preset.session.window.end if preset else '18:00' }}" required>
       </label>
-      <label>
-        <input type="checkbox" name="session.close_outside" value="true"
-               {% if preset.session.close_outside %}checked{% endif %}>
-        Fechar fora do horário
+      <label title="Se verdadeiro, fecha posições abertas no fim da sessão.">
+        Close Outside
+        <select name="session.close_outside">
+          <option value="true" {% if preset and preset.session.close_outside %}selected{% endif %}>Sim</option>
+          <option value="false" {% if preset and not preset.session.close_outside %}selected{% endif %}>Não</option>
+        </select>
       </label>
-      <label>
+    </div>
+    <div class="grid-3">
+      <label title="Atraso para operar em regiões criadas no dia anterior (InpCarryEntryDelayMin).">
         Carry Delay (min)
-        <input type="number" name="session.carry_entry_delay_min"
-               value="{{ preset.session.carry_entry_delay_min }}" min="0">
+        <input type="number" name="session.carry_entry_delay_min" value="{{ preset.session.carry_entry_delay_min if preset else 0 }}" required>
       </label>
-      <label>
+      <label title="Tempo de vida do rompimento após o candle-sinal (InpBreakoutTTLMin).">
         Breakout TTL (min)
-        <input type="number" name="session.breakout_ttl_min"
-               value="{{ preset.session.breakout_ttl_min }}" min="0">
+        <input type="number" name="session.breakout_ttl_min" value="{{ preset.session.breakout_ttl_min if preset else 60 }}" required>
       </label>
-      <label>
+      <label title="Tempo de espera após um Stop Loss para nova entrada (InpCooldownAfterSLMin).">
         Cooldown pós-SL (min)
-        <input type="number" name="session.cooldown_after_sl_min"
-               value="{{ preset.session.cooldown_after_sl_min }}" min="0">
+        <input type="number" name="session.cooldown_after_sl_min" value="{{ preset.session.cooldown_after_sl_min if preset else 10 }}" required>
       </label>
-      <label>
-        Max Trades/Dia
-        <input type="number" name="session.max_trades_day"
-               value="{{ preset.session.max_trades_day }}" min="0">
-      </label>
-      <label>
-        <input type="checkbox" name="session.use_entry_block" value="true"
-               {% if preset.session.use_entry_block %}checked{% endif %}>
-        Usar Entry Block
-      </label>
-      <label>
-        Block Início
-        <input name="session.entry_block.start" value="{{ preset.session.entry_block.start }}" placeholder="10:00">
-      </label>
-      <label>
-        Block Fim
-        <input name="session.entry_block.end" value="{{ preset.session.entry_block.end }}" placeholder="11:00">
+      <label title="Máximo de trades permitidos por dia (InpMaxTradesDay).">
+        Max Trades / Dia
+        <input type="number" name="session.max_trades_day" value="{{ preset.session.max_trades_day if preset else 3 }}" required>
       </label>
     </div>
   </div>
 
-  {# ---------- ENTRADA ---------- #}
+  <!-- Entrada -->
   <div class="card">
     <h3>Entrada</h3>
     <div class="grid-3">
-      <label>
+      <label title="Modo de entrada: no meio da região ou em um offset específico (InpEntryMode).">
         Modo
-        <select name="entry.level_mode">
-          {% for m in ["default", "broken_extreme", "mid", "opposite_extreme", "immediate"] %}
-            <option value="{{ m }}" {% if preset.entry.level_mode == m %}selected{% endif %}>{{ m }}</option>
-          {% endfor %}
+        <select name="entry.mode">
+          <option value="mid" {% if preset and preset.entry.mode == 'mid' %}selected{% endif %}>Meio</option>
+          <option value="offset" {% if preset and preset.entry.mode == 'offset' %}selected{% endif %}>Offset</option>
         </select>
       </label>
-      <label>
-        Offset (pts)
-        <input type="number" name="entry.level_offset_points"
-               value="{{ preset.entry.level_offset_points }}" step="0.1">
+      <label title="Offset em pontos a partir da borda da região (InpEntryOffsetPoints).">
+        Offset (pontos)
+        <input type="number" name="entry.offset_points" value="{{ preset.entry.offset_points if preset else 0 }}" required>
       </label>
-      <label>
-        <input type="checkbox" name="entry.as_pending" value="true"
-               {% if preset.entry.as_pending %}checked{% endif %}>
-        Ordem limite
-      </label>
-      <label>
-        Max Gap (pts)
-        <input type="number" name="entry.max_entry_gap_points"
-               value="{{ preset.entry.max_entry_gap_points }}" min="0">
+      <label title="Se verdadeiro, usa ordens limite (BuyLimit/SellLimit). Se falso, usa ordens a mercado.">
+        As Pending
+        <select name="entry.as_pending">
+          <option value="true" {% if preset and preset.entry.as_pending %}selected{% endif %}>Sim</option>
+          <option value="false" {% if preset and not preset.entry.as_pending %}selected{% endif %}>Não</option>
+        </select>
       </label>
     </div>
   </div>
 
-  {# ---------- STOP ---------- #}
+  <!-- Stop Loss -->
   <div class="card">
     <h3>Stop Loss</h3>
     <div class="grid-3">
-      <label>
-        Modo SL
-        <select name="stop.level_mode">
-          {% for m in ["default", "opposite_extreme", "mid"] %}
-            <option value="{{ m }}" {% if preset.stop.level_mode == m %}selected{% endif %}>{{ m }}</option>
-          {% endfor %}
+      <label title="Modo de cálculo do Stop Loss: por pontos fixos ou por nível da região (InpStopMode).">
+        Modo
+        <select name="stop.mode">
+          <option value="points" {% if preset and preset.stop.mode == 'points' %}selected{% endif %}>Pontos</option>
+          <option value="level" {% if preset and preset.stop.mode == 'level' %}selected{% endif %}>Nível</option>
         </select>
       </label>
-      <label>
-        SL Points
-        <input type="number" name="stop.sl_points"
-               value="{{ preset.stop.sl_points }}" step="0.1" min="0.1">
-      </label>
-      <label>
-        SL Level Offset
-        <input type="number" name="stop.level_offset_points"
-               value="{{ preset.stop.level_offset_points }}" step="0.1" min="0">
+      <label title="Distância do Stop Loss em pontos (InpSLPoints).">
+        SL (pontos)
+        <input type="number" name="stop.sl_points" value="{{ preset.stop.sl_points if preset else 800 }}" required>
       </label>
     </div>
   </div>
 
-  {# ---------- TAKE PROFIT ---------- #}
+  <!-- Take Profit -->
   <div class="card">
     <h3>Take Profit</h3>
     <div class="grid-3">
-      <label>
-        <input type="checkbox" name="take_profit.use_final_tp" value="true"
-               {% if preset.take_profit.use_final_tp %}checked{% endif %}>
-        Usar TP final
+      <label title="Se verdadeiro, usa um Take Profit fixo para o restante da posição (InpUseFinalTP).">
+        Use Final TP
+        <select name="take_profit.use_final_tp">
+          <option value="true" {% if preset and preset.take_profit.use_final_tp %}selected{% endif %}>Sim</option>
+          <option value="false" {% if preset and not preset.take_profit.use_final_tp %}selected{% endif %}>Não</option>
+        </select>
       </label>
-      <label>
-        TP Points
-        <input type="number" name="take_profit.final_tp_points"
-               value="{{ preset.take_profit.final_tp_points }}" step="0.1" min="0">
+      <label title="Distância do Take Profit em pontos (InpFinalTPPoints).">
+        TP (pontos)
+        <input type="number" name="take_profit.final_tp_points" value="{{ preset.take_profit.final_tp_points if preset else 1700 }}" required>
       </label>
     </div>
   </div>
 
-  {# ---------- RISCO ---------- #}
+  <!-- Risco -->
   <div class="card">
     <h3>Risco</h3>
     <div class="grid-3">
-      <label>
+      <label title="Modo de cálculo do volume: contratos fixos ou por risco (InpSizingMode).">
         Sizing Mode
         <select name="risk.sizing_mode">
-          <option value="fixed_contracts" {% if preset.risk.sizing_mode == "fixed_contracts" %}selected{% endif %}>Fixo</option>
-          <option value="by_risk" {% if preset.risk.sizing_mode == "by_risk" %}selected{% endif %}>Pelo Risco</option>
+          <option value="fixed_contracts" {% if preset and preset.risk.sizing_mode == 'fixed_contracts' %}selected{% endif %}>Contratos Fixos</option>
+          <option value="by_risk" {% if preset and preset.risk.sizing_mode == 'by_risk' %}selected{% endif %}>By Risk</option>
         </select>
       </label>
-      <label>
+      <label title="Número total de contratos para sizing fixo (InpTotalContracts).">
         Total Contracts
-        <input type="number" name="risk.total_contracts"
-               value="{{ preset.risk.total_contracts }}" min="1">
+        <input type="number" name="risk.total_contracts" value="{{ preset.risk.total_contracts if preset else 6 }}" required>
       </label>
-      <label>
-        Lot/Contract
-        <input type="number" name="risk.lot_per_contract"
-               value="{{ preset.risk.lot_per_contract }}" step="0.01" min="0.01">
+      <label title="Tamanho do lote por contrato (InpLotPerContract).">
+        Lot per Contract
+        <input type="number" step="0.1" name="risk.lot_per_contract" value="{{ preset.risk.lot_per_contract if preset else 1.0 }}" required>
       </label>
-      <label>
+    </div>
+    <div class="grid-3">
+      <label title="Modo de risco: valor fixo em dinheiro ou percentual do saldo (InpRiskMode).">
         Risk Mode
         <select name="risk.risk_mode">
-          <option value="fixed_money" {% if preset.risk.risk_mode == "fixed_money" %}selected{% endif %}>Fixed Money</option>
-          <option value="percent_balance" {% if preset.risk.risk_mode == "percent_balance" %}selected{% endif %}>% Balance</option>
+          <option value="fixed_money" {% if preset and preset.risk.risk_mode == 'fixed_money' %}selected{% endif %}>Fixed Money</option>
+          <option value="percent_balance" {% if preset and preset.risk.risk_mode == 'percent_balance' %}selected{% endif %}>% Balance</option>
         </select>
       </label>
-      <label>
+      <label title="Valor do risco (em R$ ou % do saldo) por trade (InpRiskValue).">
         Risk Value
-        <input type="number" name="risk.risk_value"
-               value="{{ preset.risk.risk_value }}" step="0.1" min="0.1">
+        <input type="number" step="0.1" name="risk.risk_value" value="{{ preset.risk.risk_value if preset else 1.0 }}" required>
       </label>
-      <label>
-        <input type="checkbox" name="risk.use_partial_exit" value="true"
-               {% if preset.risk.use_partial_exit %}checked{% endif %}>
-        Parciais
+    </div>
+    <div class="grid-3">
+      <label title="Se verdadeiro, divide a saída da posição em tiers (InpUsePartialExit).">
+        Use Partial Exit
+        <select name="risk.use_partial_exit">
+          <option value="true" {% if preset and preset.risk.use_partial_exit %}selected{% endif %}>Sim</option>
+          <option value="false" {% if preset and not preset.risk.use_partial_exit %}selected{% endif %}>Não</option>
+        </select>
       </label>
-      <label>
-        <input type="checkbox" name="risk.use_reentry" value="true"
-               {% if preset.risk.use_reentry %}checked{% endif %}>
-        Reforço
+      <label title="Se verdadeiro, adiciona contratos se o preço avançar e voltar ao entry (InpUseReentry).">
+        Use Reentry
+        <select name="risk.use_reentry">
+          <option value="true" {% if preset and preset.risk.use_reentry %}selected{% endif %}>Sim</option>
+          <option value="false" {% if preset and not preset.risk.use_reentry %}selected{% endif %}>Não</option>
+        </select>
       </label>
     </div>
   </div>
 
-  {# ---------- REGIÕES ---------- #}
+  <!-- Regiões -->
   <div class="card">
     <h3>Regiões</h3>
     <div class="grid-3">
-      <label>
-        Max Loc
-        <input type="number" name="regions.max_loc"
-               value="{{ preset.regions.max_loc }}" min="1" max="100">
+      <label title="Número máximo de regiões ativas simultaneamente (InpMaxLoc).">
+        Max LOC
+        <input type="number" name="regions.max_loc" value="{{ preset.regions.max_loc if preset else 12 }}" required>
       </label>
-      <label>
+      <label title="Número de dias úteis que uma região permanece válida (InpValidDays).">
         Valid Days
-        <input type="number" name="regions.valid_days"
-               value="{{ preset.regions.valid_days }}" min="0">
+        <input type="number" name="regions.valid_days" value="{{ preset.regions.valid_days if preset else 2 }}" required>
       </label>
-      <label>
+      <label title="Modo de seleção da região candidata: maior volume ou primeira pronta (InpCandidateMode).">
         Candidate Mode
         <select name="regions.candidate_mode">
-          <option value="highest_volume" {% if preset.regions.candidate_mode == "highest_volume" %}selected{% endif %}>Maior Volume</option>
-          <option value="first_ready" {% if preset.regions.candidate_mode == "first_ready" %}selected{% endif %}>Primeira Pronta</option>
+          <option value="highest_volume" {% if preset and preset.regions.candidate_mode == 'highest_volume' %}selected{% endif %}>Highest Volume</option>
+          <option value="first_ready" {% if preset and preset.regions.candidate_mode == 'first_ready' %}selected{% endif %}>First Ready</option>
         </select>
       </label>
     </div>
   </div>
 
-  {# ---------- BOTÕES ---------- #}
-  <div style="display: flex; gap: 1rem; margin-top: 1rem;">
-    <button type="submit">Salvar preset</button>
-    <button type="button" class="secondary"
-            hx-get="/api/preset"
-            hx-target="#preset-form"
-            hx-swap="outerHTML">
-      Recarregar (descarta)
-    </button>
-  </div>
+  <button type="submit" class="contrast">Salvar preset</button>
 </form>
+
+<script>
+async function savePreset() {
+    const form = document.getElementById('preset-form');
+    const formData = new FormData(form);
+    const data = {};
+
+    // Converte inputs aninhados como "detector.std_ref" em objetos JSON
+    for (const [key, value] of formData.entries()) {
+        const parts = key.split('.');
+        let current = data;
+        for (let i = 0; i < parts.length - 1; i++) {
+            current[parts[i]] = current[parts[i]] || {};
+            current = current[parts[i]];
+        }
+        
+        // Converte strings "true" / "false" para booleanos reais
+        let finalValue = value;
+        if (value === "true") finalValue = true;
+        else if (value === "false") finalValue = false;
+        // Converte números (mas ignora strings vazias para não virar 0)
+        else if (!isNaN(value) && value.trim() !== "") finalValue = Number(value);
+        
+        current[parts[parts.length - 1]] = finalValue;
+    }
+
+    // Tratamento especial para os inputs de tempo (09:00 -> 09:00:00)
+    if (data.session && data.session.window) {
+        if (data.session.window.start && data.session.window.start.length === 5) {
+            data.session.window.start += ":00";
+        }
+        if (data.session.window.end && data.session.window.end.length === 5) {
+            data.session.window.end += ":00";
+        }
+    }
+
+    try {
+        const response = await fetch('/api/preset', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'HX-Request': 'true'
+            },
+            body: JSON.stringify(data)
+        });
+
+        const html = await response.text();
+        form.outerHTML = html;
+    } catch (error) {
+        alert("Erro ao salvar: " + error);
+    }
+}
+</script>

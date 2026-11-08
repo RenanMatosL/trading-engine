@@ -1,11 +1,11 @@
-name: test
+name: v510_default
 strategy: stddev_v510
 detector:
-  length: 180
-  std_ref: 4.0
-  volume_source: tick
+  length: 90
+  std_ref: 3.5
+  volume_source: real
   timeframe: M1
-  mute_open_min: 10
+  mute_open_min: 0
   use_big_candle_rule: true
   big_candle_min_range: 400.0
   big_candle_entry_offset: 200.0
@@ -13,12 +13,12 @@ detector:
 session:
   window:
     start: 09:00:00
-    end: '17:30:00'
+    end: '18:30:00'
   close_outside: true
-  carry_entry_delay_min: 15
+  carry_entry_delay_min: 0
   breakout_ttl_min: 60
-  cooldown_after_sl_min: 10
-  max_trades_day: 3
+  cooldown_after_sl_min: 0
+  max_trades_day: 5
   use_entry_block: true
   entry_block:
     start: '10:00:00'
@@ -37,7 +37,7 @@ take_profit:
   final_tp_points: 600.0
 risk:
   sizing_mode: fixed_contracts
-  total_contracts: 6
+  total_contracts: 8
   lot_per_contract: 1.0
   risk_mode: percent_balance
   risk_value: 1.0
@@ -62,6 +62,6 @@ risk:
   use_reverse: false
   reuse_sl_signal: false
 regions:
-  max_loc: 12
-  valid_days: 2
+  max_loc: 3
+  valid_days: 1
   candidate_mode: highest_volume

@@ -296,3 +296,80 @@ def test_stream_endpoint(client, preset_file):
     with client.stream("GET", "/stream") as r:
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/event-stream")
+
+#+------------------------------------------------------------------+
+#| F7g — Cobertura de casos de borda (Web)                          |
+#+------------------------------------------------------------------+
+
+def test_dashboard_page_render(client, preset_file):
+    """GET / renderiza o dashboard com os IDs principais."""
+    r = client.get("/")
+    assert r.status_code == 200
+    assert 'id="status-container"' in r.text
+    assert "Equity Curve" in r.text
+    assert "Últimos Trades" in r.text
+
+
+def test_api_backtest_csv_vazio(client, preset_file):
+    """POST /api/backtest com arquivo vazio → 400."""
+    # Envia um arquivo vazio sem cabeçalho
+    r = client.post(
+        "/api/backtest",
+        files={"file": ("vazio.csv", b"", "text/csv")},
+    )
+    assert r.status_code == 400
+    assert "error" in r.json()
+    assert "vazio" in r.json()["error"].lower()
+
+
+def test_api_backtest_csv_sem_header(client, preset_file):
+    """POST /api/backtest com CSV sem as colunas obrigatórias → 400."""
+    # Envia um CSV que tem conteúdo, mas não tem o header esperado
+    csv_invalido = b"a,b,c\n1,2,3\n"
+    r = client.post(
+        "/api/backtest",
+        files={"file": ("invalido.csv", csv_invalido, "text/csv")},
+    )
+    assert r.status_code == 400
+    assert "CSV inválido" in r.json()["error"]
+
+
+def test_api_shadow_magic_igual(client, preset_file):
+    """POST /api/shadow com py_magic == ea_magic → 400."""
+    r = client.post(
+        "/api/shadow",
+        data={"ea_magic": "123", "py_magic": "123", "duration_min": "60"},
+    )
+    assert r.status_code == 400
+    assert "não pode ser igual" in r.json()["error"]
+
+
+def test_api_shadow_duracao_invalida(client, preset_file):
+    """POST /api/shadow com duration_min fora do range (0 ou > 10080) → 400."""
+    # Duração 0
+    r = client.post(
+        "/api/shadow",
+        data={"ea_magic": "123", "duration_min": "0"},
+    )
+    assert r.status_code == 400
+    assert "duration_min" in r.json()["error"]
+
+    # Duração muito longa (8 dias)
+    r = client.post(
+        "/api/shadow",
+        data={"ea_magic": "123", "duration_min": "99999"},
+    )
+    assert r.status_code == 400
+    assert "duration_min" in r.json()["error"]
+
+
+def test_404_pagina_inexistente(client, preset_file):
+    """GET em uma página que não existe → 404."""
+    r = client.get("/nao-existe")
+    assert r.status_code == 404
+
+
+def test_404_api_inexistente(client, preset_file):
+    """GET em uma rota de API que não existe → 404."""
+    r = client.get("/api/nao-existe")
+    assert r.status_code == 404

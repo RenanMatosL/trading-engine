@@ -301,3 +301,141 @@ def test_slippage_zero_nao_altera_fill():
 
     assert executor.open_trade is not None
     assert executor.open_trade.entry_price == 1100.0  # sem slippage
+
+#+------------------------------------------------------------------+
+#| F8 — Parciais e Reforço no simulador                             |
+#+------------------------------------------------------------------+
+from datetime import datetime, timezone
+from engine.application.intent import TradeIntent
+from engine.application.simulation import SimulatedExecutor, ExitReason
+from engine.domain.shared.types import MarketSnapshot
+from engine.domain.strategy.location import RegionState, RegionPhase, TradeLocation
+
+def test_sim_partial_exit_fill():
+    """F8: Simula um trade atingindo o alvo do Tier 1 e verifica a parcial."""
+    preset = _preset()
+
+    # 1. Configura o preset para forçar parciais
+    # (como os campos são "frozen", precisamos recriar o RiskParams, mas
+    #  para simplificar, vamos usar model_copy e setar via dict)
+    from engine.config.presets import PartialExitType, PartialTier
+    risk = preset.risk.model_copy(update={
+        "use_partial_exit": True,
+        "partial_points": 100.0,
+        "partial_tiers": [
+            PartialTier(contracts=2, points=0),
+            PartialTier(contracts=0, points=0),
+            PartialTier(contracts=0, points=0),
+        ],
+        "exit_type": PartialExitType.POINTS,
+        "breakeven_after_partial": True,  # ← ADICIONADO
+    })
+    preset = preset.model_copy(update={"risk": risk})
+
+    executor = SimulatedExecutor(preset, initial_balance=100_000.0)
+
+    # 2. Cria um TradeIntent fictício
+    region = RegionState(
+        location=TradeLocation(
+            bar_time=datetime.now(timezone.utc),
+            high=1000.0, low=900.0,
+            volume=1000.0, big_candle=False,
+        ),
+    )
+    region.phase = RegionPhase.BROKEN
+    region.is_buy = True
+    intent = TradeIntent(
+        region=region,
+        is_buy=True,
+        entry_price=950.0,
+        stop_loss=900.0,
+        take_profit=1200.0,
+        volume=6.0,
+        as_pending=False,
+        reason="test",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    # 3. Tick inicial: preço no entry (abre o trade)
+    snap_open = MarketSnapshot(
+        ask=950.0, bid=950.0, now=datetime.now(timezone.utc), spread=0.0,
+    )
+    executor.execute(intent, snap_open)
+    assert executor.open_trade is not None
+    assert executor.open_trade.remaining_volume == 6.0
+
+    # 4. Tick atingindo Tier 1 (bid = 1050 = entry + 100)
+    snap_tier1 = MarketSnapshot(
+        ask=1050.0, bid=1050.0, now=datetime.now(timezone.utc), spread=0.0,
+    )
+    executor.on_tick(snap_tier1)
+
+    # 5. Verificações do Tier 1
+    assert len(executor.open_trade.fills) == 1
+    assert executor.open_trade.fills[0].reason == ExitReason.PARTIAL
+    assert executor.open_trade.fills[0].price == 1050.0
+    assert executor.open_trade.remaining_volume == 4.0  # 6 - 2
+    assert executor.open_trade.stop_loss == 950.0  # Breakeven (se breakeven_after_partial=True)
+
+
+def test_sim_reentry_fill():
+    """F8: Simula o preço avançando, voltando e disparando o reforço."""
+    preset = _preset()
+
+    risk = preset.risk.model_copy(update={
+        "use_reentry": True,
+        "reentry_arm_points": 50.0,
+        "reentry_contracts": 3,
+        "use_partial_exit": False,
+        "total_contracts": 2,  # <-- garante que o trade abra com 2 contratos
+    })
+    preset = preset.model_copy(update={"risk": risk})
+
+    executor = SimulatedExecutor(preset, initial_balance=100_000.0)
+
+    # 2. Cria o TradeIntent (sem TP/SL para não fechar acidentalmente)
+    region = RegionState(
+        location=TradeLocation(
+            bar_time=datetime.now(timezone.utc),
+            high=1000.0, low=900.0,
+            volume=1000.0, big_candle=False,
+        ),
+    )
+    region.phase = RegionPhase.BROKEN
+    region.is_buy = True
+    intent = TradeIntent(
+        region=region,
+        is_buy=True,
+        entry_price=950.0,
+        stop_loss=800.0,  # SL bem longe
+        take_profit=1500.0,  # TP bem longe
+        volume=2.0,
+        as_pending=False,
+        reason="test",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    # 3. Abre o trade
+    snap_open = MarketSnapshot(
+        ask=950.0, bid=950.0, now=datetime.now(timezone.utc), spread=0.0,
+    )
+    executor.execute(intent, snap_open)
+    assert executor.open_trade.remaining_volume == 2.0  # volume inicial (só o trade original)
+
+    # 4. Preço avança 60 pontos (arma o reforço)
+    snap_advance = MarketSnapshot(
+        ask=1010.0, bid=1010.0, now=datetime.now(timezone.utc), spread=0.0,
+    )
+    executor.on_tick(snap_advance)
+    assert executor.open_trade.reentry_armed is True
+    assert executor.open_trade.reentry_done is False
+
+    # 5. Preço volta ao entry (950) — dispara o reforço
+    snap_return = MarketSnapshot(
+        ask=949.0, bid=950.0, now=datetime.now(timezone.utc), spread=0.0,
+    )
+    executor.on_tick(snap_return)
+
+    # 6. Verificações do reforço
+    assert executor.open_trade.reentry_done is True
+    assert executor.open_trade.remaining_volume == 5.0  # 2 originais + 3 reforço

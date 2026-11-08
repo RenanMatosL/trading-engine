@@ -79,9 +79,10 @@ async def run_backtest(
     if not bars:
         return _error("Nenhum candle no período", request, is_htmx)
 
-    # 4. Carrega preset
+    # 4. Carrega preset (sempre do settings.preset)
     try:
-        preset = load_preset(settings.preset)
+        preset_path = Path(settings.preset).resolve()
+        preset = load_preset(preset_path)
     except Exception as exc:  # noqa: BLE001
         return _error(f"Preset inválido: {exc}", request, is_htmx)
 
@@ -130,6 +131,7 @@ async def run_backtest(
             context={"result": summary, "error": None},
         )
     return JSONResponse(content=summary)
+
 
 @router.get("")
 async def get_backtest_form(request: Request):

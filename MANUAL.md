@@ -68,8 +68,8 @@ uv pip install -e ".[dev,web]"
 2.4 — Verificar instalação
 powershell
 uv run engine version      # deve imprimir "0.1.0"
-uv run pytest -q           # deve imprimir "231 passed"
-Se der 231 passed, a instalação está OK.
+uv run pytest -q           # deve imprimir "241 passed"
+Se der 241 passed, a instalação está OK.
 
 3. Configuração inicial (.env)
 3.1 — Criar .env a partir do exemplo
@@ -112,7 +112,7 @@ Se der 7 seções no log, o preset está OK.
 4.1 — Testes unitários
 powershell
 uv run pytest -q
-Esperado: 231 passed.
+Esperado: 241 passed.
 
 4.2 — CLI funciona?
 powershell
@@ -140,7 +140,7 @@ strategy_session_created   magic=0 name=stddev_v510 preset=v510_default
 engine_run_start           n_strategies=1 strategies=['stddev_v510']
 engine_run_max_ticks       ticks=11
 5. Frontend web
-O que é: dashboard web (FastAPI + HTMX + Pico.css + uPlot) para acompanhar o motor em tempo real, editar o preset, ver trades/equity, rodar backtests e comparar com o EA (shadow).
+O que é: dashboard web (FastAPI + HTMX + Pico.css + uPlot) para acompanhar o motor em tempo real (via SSE), editar o preset, ver trades/equity, rodar backtests e comparar com o EA (shadow).
 
 5.1 — Iniciar o servidor web
 powershell
@@ -160,12 +160,12 @@ Abra http://localhost:8000 → dashboard.
 
 5.2 — Telas do frontend
 URL	O que mostra
-/	Dashboard (status + equity curve + tabela de trades)
+/	Dashboard (status em tempo real via SSE + equity curve + tabela de trades)
 /config	Edição do preset (formulário com 7 blocos)
 /backtest	Backtest (upload CSV + resultado)
 /shadow	Shadow (comparar com EA — read-only)
 5.3 — Dashboard (/)
-3 cards no topo:
+3 cards no topo (atualizam a cada 2s via SSE):
 
 Conta: login, servidor, saldo.
 
@@ -215,11 +215,11 @@ Recarregar (descarta): descarta edições, recarrega do YAML.
 Segurança: o backup .bak é criado em presets/stddev_v510_default.yaml.bak antes de sobrescrever.
 
 5.5 — Backtest (/backtest)
-O que faz: roda o motor sobre um CSV de candles (sem MT5).
+O que faz: roda o motor sobre um CSV de candles (sem MT5). Agora com parciais e reforço (F8), refletindo com precisão o comportamento real.
 
 Passo a passo:
 
-Clique em "Escolher arquivo" e selecione um CSV (ex: tests/fixtures/sample_bars.csv).
+Clique em "Escolher arquivo" e selecione um CSV (ex: tests/fixtures/WINZ26_M1_202611040903_202611051800.csv).
 
 Ajuste o saldo inicial (default: 100.000).
 
@@ -227,7 +227,9 @@ Clique em "Rodar backtest".
 
 O formulário é substituído pelo card verde "Resultado do Backtest" com as métricas (Candles, Trades, Win Rate, PnL, Return, Sharpe, Max Drawdown, Profit Factor, Avg Win / Loss).
 
-Nota: o CSV precisa ter no mínimo 180 candles para o detector gerar trades. O fixture sample_bars.csv tem 10 candles, então o resultado será Trades=0 (comportamento esperado).
+Nota 1: o CSV precisa ter no mínimo 180 candles para o detector gerar trades. O fixture sample_bars.csv tem 10 candles, então o resultado será Trades=0 (comportamento esperado).
+
+Nota 2: O CSV exportado do MT5 (com tabulação/UTF-16) é aceito automaticamente pelo csv_loader.py (F8+).
 
 5.6 — Shadow (/shadow)
 O que faz: compara os deals já executados pelo EA (MQL5) com os deals do Python em uma janela de tempo. Read-only (não coloca ordens).
@@ -401,13 +403,19 @@ mismatches	Ambos fizeram, mas com preço/direção diferentes	Baixo
 Objetivo: rodar backtest sobre um CSV de candles, sem MT5.
 
 10.1 — Preparar o CSV
-Formato esperado:
+Opção A: Formato padrão do projeto:
 
 csv
 time,open,high,low,close,tick_volume,real_volume
 2026-10-29 09:00:00,170900,171020,170850,170950,2500,0
 2026-10-29 09:01:00,170950,171100,170900,171050,3200,0
 ...
+Opção B: Formato exportado pelo MT5 (tabulação, UTF-16):
+O csv_loader.py (F8+) aceita automaticamente o CSV do MT5, que tem este formato:
+
+text
+<DATE>	<TIME>	<OPEN>	<HIGH>	<LOW>	<CLOSE>	<TICKVOL>	<VOL>	<SPREAD>
+2026.05.12 17:12	193590	193590	193590	193590	1	1	0
 10.2 — Rodar o backtest
 powershell
 uv run engine backtest --csv meu_historico.csv
@@ -445,6 +453,17 @@ return_pct	Retorno % sobre o saldo inicial
 sharpe	Sharpe ratio anualizado
 max_drawdown_pct	Pior queda % do equity
 profit_factor	Lucro bruto / |prejuízo bruto|
+Nota F8: o simulador agora respeita as parciais (Tier 1/2/3) e o reforço, então o PnL e as métricas refletem o comportamento real do MT5.
+
+10.4 — Modos de entrada (para calibrar)
+O comportamento do backtest depende do entry.level_mode no YAML:
+
+Modo	O que faz
+default	Entrada no meio da região (ou no extremo - offset, em candle grande).
+broken_extreme	Entrada no extremo rompido (pullback raso).
+mid	Entrada no meio da região.
+opposite_extreme	Entrada no extremo oposto (pullback profundo).
+immediate	Entrada a mercado no instante do rompimento.
 11. Fase 6 — Operação real (conta real)
 ⚠️ Só faça isso depois de validar em demo por 1-2 semanas.
 
@@ -632,7 +651,7 @@ Fix: confirme:
 
 cmd
 findstr /C:"include_router" src\engine\web\app.py
-Esperado: 5 linhas (status + trades + equity + preset + backtest + shadow).
+Esperado: 6 linhas (status + trades + equity + preset + backtest + shadow + stream).
 
 14.5 — TemplateNotFound no frontend
 Causa: template faltando.
@@ -641,7 +660,7 @@ Fix: confirme:
 
 cmd
 dir src\engine\web\templates\
-Esperado: base.html, dashboard.html, _status.html, _trades.html, _equity.html, config.html, _preset.html, backtest.html, _backtest.html, shadow.html, _shadow.html.
+Esperado: base.html, dashboard.html, _status.html, _status_sse.html, _trades.html, _equity.html, config.html, _preset.html, backtest.html, _backtest.html, shadow.html, _shadow.html.
 
 14.6 — unhashable type: 'dict' no frontend
 Causa: TemplateResponse com assinatura antiga (Starlette < 0.30).
@@ -671,6 +690,16 @@ Causa: o rascunho do router tentou construir um TradeIntent completo, mas faltar
 
 Fix: o router corrigido usa _ShadowTrade (duck typing) com apenas bar_time, is_buy e entry_price. Não precisa mexer em nada.
 
+14.12 — uvicorn não fecha com Ctrl+C
+Causa: O navegador está com a aba do dashboard aberta, e a conexão SSE (/stream) mantém o servidor ativo.
+
+Fix: Feche a aba do navegador (ou navegue para /config) antes de dar Ctrl+C. Se já travou, aperte Ctrl+C duas vezes.
+
+14.13 — Alterações no /config não refletem no /backtest
+Causa: O YAML salvo pelo /config pode estar em cache ou o backtest.py está lendo de settings.preset (default) em vez do app.state.preset_path.
+
+Fix: Edite o YAML manualmente (em presets/stddev_v510_default.yaml) e rode o backtest. Confirme o conteúdo com type presets\stddev_v510_default.yaml | findstr "level_mode sl_points".
+
 15. Glossário
 Termo	Significado
 Região	Área de trade-location criada por um candle-sinal (máx, mín, meio)
@@ -688,10 +717,10 @@ B3Calendar	Calendário de pregões da B3 (feriados 2026-2027)
 HTMX	Biblioteca JS (14 KB) que faz AJAX sem escrever JS
 Pico.css	CSS semântico (dark mode nativo)
 uPlot	Biblioteca de gráficos (50 KB)
-Frontend	Dashboard web (FastAPI + HTMX + Pico + uPlot)
+Frontend	Dashboard web (FastAPI + HTMX + Pico + uPlot + SSE)
 📞 Suporte
-Dúvidas sobre o código: leia o AI.md (backend) ou ai_front_end.md (frontend).
+Dúvidas sobre o código: leia o AI.md (fonte única de verdade do projeto).
 
 Dúvidas sobre o EA: leia o StdDevVolumeBreakout.mq5 (comentado).
 
-Issues: abra no GitHub
+Issues: abra no GitHub.
