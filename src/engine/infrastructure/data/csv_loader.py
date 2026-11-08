@@ -39,7 +39,7 @@ def _open_csv(path: Path):
 #+------------------------------------------------------------------+
 def _is_iso_format(header: list[str]) -> bool:
     return (
-        len(header) >= 6
+        len(header) >= 5
         and header[0].strip().lower() == "time"
         and header[1].strip().lower() == "open"
     )
@@ -62,9 +62,10 @@ def _is_mt5_no_header_format(line: str) -> bool:
 
 
 #+------------------------------------------------------------------+
-#| Parser genérico                                                    |
+#| Parser genérico                                                  |
 #+------------------------------------------------------------------+
 def _parse_dt(raw: str) -> datetime:
+    """Aceita `2026.05.12 17:12`, `2026.05.12 17:12:00` ou ISO."""
     raw = raw.strip()
     for fmt in ("%Y.%m.%d %H:%M", "%Y.%m.%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
         try:
@@ -104,14 +105,13 @@ def _parse_mt5_header(path: Path) -> list[Bar]:
     with _open_csv(path) as f:
         first_line = f.readline()
         delimiter = "\t" if "\t" in first_line else ";"
-        f.seek(0)  # volta ao início para o reader pegar o header
+        f.seek(0)
         reader = csv.reader(f, delimiter=delimiter)
         next(reader, None)  # pula cabeçalho
         for row in reader:
             if not row or len(row) < 6:
                 continue
             try:
-                # MT5 separa data e hora com tabulação dentro de <DATE> e <TIME>
                 dt = _parse_dt(f"{row[0].strip().replace('.', '-')} {row[1].strip()}")
                 bars.append(Bar(
                     time=dt,
@@ -131,10 +131,20 @@ def _parse_iso(path: Path) -> list[Bar]:
     bars: list[Bar] = []
     with _open_csv(path) as f:
         reader = csv.DictReader(f)
+        # Checa as colunas obrigatórias
+        required = {"time", "open", "high", "low", "close", "tick_volume"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"CSV faltando colunas obrigatórias: {missing}")
         for row in reader:
             try:
+                time_str = row["time"].strip()
+                if time_str.isdigit():
+                    dt = datetime.fromtimestamp(float(time_str), tz=timezone.utc)
+                else:
+                    dt = _parse_dt(time_str)
                 bars.append(Bar(
-                    time=_parse_dt(row["time"]),
+                    time=dt,
                     open=float(row["open"]),
                     high=float(row["high"]),
                     low=float(row["low"]),
@@ -148,9 +158,10 @@ def _parse_iso(path: Path) -> list[Bar]:
 
 
 #+------------------------------------------------------------------+
-#| Entry point                                                       |
+#| Entry point                                                      |
 #+------------------------------------------------------------------+
 def load_bars_csv(path: Path | str) -> list[Bar]:
+    """Carrega CSV nos formatos ISO, MT5 com cabeçalho ou MT5 sem cabeçalho."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"CSV não encontrado: {path}")
@@ -160,22 +171,29 @@ def load_bars_csv(path: Path | str) -> list[Bar]:
         if not first_line:
             raise ValueError("CSV vazio")
 
-    # Detecta o separador: tabulação (MT5), ponto e vírgula (MT5 europeu) ou vírgula
+    # Detecta o separador
     if "\t" in first_line:
         delimiter = "\t"
     elif ";" in first_line:
         delimiter = ";"
     else:
         delimiter = ","
-    header = [h.strip() for h in first_line.split(delimiter)]
 
+    header = [h.strip().lower() for h in first_line.split(delimiter)]
+
+    # 1. ISO com header explícito (o _parse_iso checa as colunas obrigatórias)
     if _is_iso_format(header):
         return _parse_iso(path)
+
+    # 2. MT5 com header
     if _is_mt5_header_format(header):
         return _parse_mt5_header(path)
+
+    # 3. MT5 sem header
     if _is_mt5_no_header_format(first_line):
         return _parse_mt5_no_header(path)
 
+    # 4. Fallback: tenta o parser MT5 sem header
     try:
         result = _parse_mt5_no_header(path)
         if result:
@@ -186,5 +204,6 @@ def load_bars_csv(path: Path | str) -> list[Bar]:
     raise ValueError(
         f"Formato de CSV não reconhecido. Cabeçalho: {header[:8]}. "
         f"Esperado ISO (time,open,...), MT5 com cabeçalho (<DATE>;<TIME>;...), "
-        f"ou MT5 sem cabeçalho (2026.05.12 17:12,...)."
+        f"ou MT5 sem cabeçalho (2026.05.12 17:12,...). "
+        f"Verifique se faltando colunas obrigatórias."
     )

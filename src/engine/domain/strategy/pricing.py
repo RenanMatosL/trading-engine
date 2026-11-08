@@ -35,6 +35,12 @@ class SLLevelMode(str, Enum):
     MID = "mid"                            # mid -/+ sl_level_offset
 
 
+class TrapMode(str, Enum):
+    """Modo do gatilho (F9): normal ou invertido (armadilha)."""
+    NORMAL = "normal"
+    TRAP = "trap"
+
+
 @dataclass(frozen=True, slots=True)
 class PricingConfig:
     """Subconjunto do preset que importa para precificação.
@@ -61,6 +67,11 @@ class PricingConfig:
     big_candle_entry_offset_points: float = 200.0
     big_candle_sl_adjust_points: float = 0.0
 
+    # ---- Modo Armadilha (F9) ----
+    trigger_mode: TrapMode = TrapMode.NORMAL
+    trap_arm_points: float = 200.0
+    trap_sl_points: float = 200.0
+
     # ---- Escala de preço (1 ponto = _point em preço) ----
     point: float = 1.0
 
@@ -84,15 +95,13 @@ def is_big_candle(loc: TradeLocation, cfg: PricingConfig) -> bool:
 #| ENTRY                                                            |
 #+------------------------------------------------------------------+
 def entry_level(loc: TradeLocation, is_buy: bool, cfg: PricingConfig) -> float:
-    """Nível de entrada conforme o modo escolhido.
+    """Nível de entrada conforme o modo escolhido."""
+    # Modo Armadilha (F9): nível = extremo ± trap_arm_points
+    if cfg.trigger_mode == TrapMode.TRAP:
+        if is_buy:
+            return loc.low - cfg.trap_arm_points * cfg.point
+        return loc.high + cfg.trap_arm_points * cfg.point
 
-    - DEFAULT:          mid (normal) / extremo -/+ offset (candle grande)
-    - BROKEN_EXTREME:   compra no high | venda no low, +entry_offset na
-                        direção do rompimento
-    - MID:              mid, ±entry_offset na direção do rompimento
-    - OPPOSITE_EXTREME: compra no low | venda no high, ±entry_offset
-    - IMMEDIATE:        retorna 0.0 (sinaliza "sem nível"; entra a mercado)
-    """
     if cfg.entry_mode == EntryLevelMode.IMMEDIATE:
         return 0.0
 
@@ -112,7 +121,6 @@ def entry_level(loc: TradeLocation, is_buy: bool, cfg: PricingConfig) -> float:
     else:  # OPPOSITE_EXTREME
         base = loc.low if is_buy else loc.high
 
-    # Ajuste na direção do rompimento (positivo = a favor do rompimento)
     return base + (off if is_buy else -off)
 
 
@@ -120,16 +128,12 @@ def entry_level(loc: TradeLocation, is_buy: bool, cfg: PricingConfig) -> float:
 #| STOP LOSS                                                        |
 #+------------------------------------------------------------------+
 def stop_level(loc: TradeLocation, is_buy: bool, cfg: PricingConfig) -> float:
-    """Nível do stop loss conforme o modo escolhido.
+    """Nível do stop loss conforme o modo escolhido."""
+    # Modo Armadilha (F9): SL = trap_sl_points além da entrada
+    if cfg.trigger_mode == TrapMode.TRAP:
+        lvl = entry_level(loc, is_buy, cfg)
+        return (lvl - cfg.trap_sl_points * cfg.point) if is_buy else (lvl + cfg.trap_sl_points * cfg.point)
 
-    - DEFAULT:          extremo oposto -/+ sl_points (normal)
-                        extremo oposto -/+ big_candle_sl_adjust (candle grande)
-    - OPPOSITE_EXTREME: extremo oposto -/+ sl_level_offset_points
-    - MID:              mid -/+ sl_level_offset_points
-
-    A convenção de sinal garante que o SL fica sempre do lado correto:
-    compra → abaixo do preço; venda → acima do preço.
-    """
     off = cfg.sl_level_offset_points * cfg.point
     mid = _mid(loc)
 
@@ -155,6 +159,13 @@ def take_profit_level(loc: TradeLocation, is_buy: bool, cfg: PricingConfig) -> f
     """TP a partir do MID, ±final_tp_points. Retorna 0.0 se desligado."""
     if not cfg.use_final_tp or cfg.final_tp_points <= 0.0:
         return 0.0
+
+    # Modo Armadilha (F9): TP = final_tp_points a partir da entrada
+    if cfg.trigger_mode == TrapMode.TRAP:
+        lvl = entry_level(loc, is_buy, cfg)
+        tp_pts = cfg.final_tp_points * cfg.point
+        return (lvl + tp_pts) if is_buy else (lvl - tp_pts)
+
     tp_pts = cfg.final_tp_points * cfg.point
     mid = _mid(loc)
     return (mid + tp_pts) if is_buy else (mid - tp_pts)

@@ -1,10 +1,11 @@
-"""TradingSession — orquestrador de decisão do EA v4.60 (F2c + F3b + F3c + F5a + F5c).
+"""TradingSession — orquestrador de decisão do EA v4.60 (F2c + F3b + F3c + F5a + F5c + F9).
 
 F2c: on_bar_closed + on_tick (filtros de sessão + TradeIntent).
 F3b: on_trade_event + rastreamento do trade atual.
 F3c: save_state / _load_state / _snapshot (persistência opcional).
 F5a: _make_intent preenche `partials`; on_trade_event rastreia parciais.
 F5c: _maybe_arm_reentry + ReentryIntent (reforço no retorno à entrada).
+F9:  modo armadilha (trigger_mode=TRAP) — inverte a direção do rompimento.
 
 Não executa ordens. Não gerencia posições. Não acessa MT5.
 """
@@ -35,6 +36,7 @@ from engine.config.presets import (
     CandidateMode,
     EntryLevelMode,
     StdDevV510Preset,
+    TriggerMode,
 )
 from engine.domain.shared.types import Bar, MarketSnapshot
 from engine.domain.state.store import SessionSnapshot, StateStore, TradeRecord
@@ -43,6 +45,7 @@ from engine.domain.strategy.pricing import (
     EntryLevelMode as PricingEntryMode,
     PricingConfig,
     SLLevelMode as PricingSLMode,
+    TrapMode,
     entry_level,
     is_big_candle,
     stop_level,
@@ -81,6 +84,10 @@ def _preset_to_pricing(preset: StdDevV510Preset) -> PricingConfig:
         big_candle_min_range_points=det.big_candle_min_range,
         big_candle_entry_offset_points=det.big_candle_entry_offset,
         big_candle_sl_adjust_points=det.big_candle_sl_adjust,
+        # F9: modo armadilha
+        trigger_mode=TrapMode.TRAP if preset.trigger_mode == TriggerMode.TRAP else TrapMode.NORMAL,
+        trap_arm_points=preset.trap_arm_points,
+        trap_sl_points=preset.trap_sl_points,
         point=1.0,
     )
 
@@ -203,7 +210,6 @@ class TradingSession:
     def _load_state(self) -> None:
         if self._store is None:
             return
-        snap = self._store.load_session()
         snap = self._store.load_session()
         if snap is not None:
             self._last_sl_time = snap.last_sl_time
@@ -591,34 +597,6 @@ class TradingSession:
             log.info("trade_event_sl_consume", region=region_time.isoformat())
         self.save_state()
 
-        def _handle_tp(
-        self,
-        position_ticket: int,
-        now: datetime,
-        deal_price: float = 0.0,
-        deal_volume: float = 0.0,
-    ) -> None:
-            """Take Profit hit (F3b + F7b-1)."""
-        region_time = self._current_entry_region
-
-        # F7b-1: grava o trade ANTES de zerar _current_entry_*
-        self._save_closed_trade(
-            exit_reason="take_profit",
-            now=now,
-            deal_price=deal_price,
-            deal_volume=deal_volume,
-        )
-
-        self.notify_position_closed(now)
-
-        if region_time is not None:
-            self._regions.consume(region_time)
-            log.info("trade_event_tp_consume", region=region_time.isoformat())
-        else:
-            log.info("trade_event_tp_no_region", position=position_ticket)
-
-        self.save_state()
-
     def _handle_tp(
         self,
         position_ticket: int,
@@ -645,7 +623,7 @@ class TradingSession:
         else:
             log.info("trade_event_tp_no_region", position=position_ticket)
 
-        self.save_state()    
+        self.save_state()
 
     def _handle_close(
         self,
@@ -784,7 +762,7 @@ class TradingSession:
         return now >= session_start + timedelta(minutes=sess.carry_entry_delay_min)
 
     # ----------------------------------------------------------------
-    # Construção do TradeIntent — F2c + F5a
+    # Construção do TradeIntent — F2c + F5a + F9
     # ----------------------------------------------------------------
     def _make_intent(
         self, region: RegionState, snapshot: MarketSnapshot
@@ -792,6 +770,10 @@ class TradingSession:
         loc = region.location
         is_buy = region.is_buy
         cfg = self._pricing
+
+        # F9: modo armadilha inverte a direção
+        if cfg.trigger_mode == TrapMode.TRAP:
+            is_buy = not is_buy
 
         if cfg.entry_mode == PricingEntryMode.IMMEDIATE:
             entry_price = snapshot.ask if is_buy else snapshot.bid

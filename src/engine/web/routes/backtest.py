@@ -81,9 +81,11 @@ async def run_backtest(
 
     # 4. Carrega preset (sempre do settings.preset)
     try:
-        preset_path = Path(settings.preset).resolve()
-        preset = load_preset(preset_path)
-    except Exception as exc:  # noqa: BLE001
+        preset_path = getattr(request.app.state, "preset_path", None)
+        if preset_path is None:
+            preset_path = settings.preset
+        preset = load_preset(Path(preset_path).resolve())
+    except Exception as exc:
         return _error(f"Preset inválido: {exc}", request, is_htmx)
 
     # 5. Roda backtest

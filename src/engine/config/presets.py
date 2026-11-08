@@ -61,6 +61,16 @@ class PartialExitType(str, Enum):
     POINTS = "points"
     PERCENT = "percent"
 
+class TriggerMode(str, Enum):
+    """Modo do gatilho: normal (rompeu = segue) ou trap (rompeu = inverte)."""
+    NORMAL = "normal"
+    TRAP = "trap"
+
+class TriggerStyle(str, Enum):
+    """Estilo do modo trap: imediata (ao atingir X) ou pullback (no retorno)."""
+    IMMEDIATE = "immediate"
+    PULLBACK = "pullback"
+
 
 #+------------------------------------------------------------------+
 #| TimeWindowParams — janela reutilizável (sessão, bloqueio)        |
@@ -353,6 +363,11 @@ class StdDevV510Preset(BaseModel):
     take_profit: TakeProfitParams = Field(default_factory=TakeProfitParams)
     risk: RiskParams = Field(default_factory=RiskParams)
     regions: RegionsParams = Field(default_factory=RegionsParams)
+    # --- Modo do Gatilho (F9) ---
+    trigger_mode: TriggerMode = TriggerMode.NORMAL
+    trap_arm_points: float = Field(200.0, ge=0)
+    trap_style: TriggerStyle = TriggerStyle.IMMEDIATE
+    trap_sl_points: float = Field(200.0, ge=0)
 
     @field_validator("name")
     @classmethod

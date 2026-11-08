@@ -36,9 +36,12 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
 def _get_preset_path(request: Request) -> Path:
-    """Retorna SEMPRE o caminho absoluto do YAML default."""
-    settings: EngineSettings = request.app.state.settings
-    return Path(settings.preset).resolve()
+    """Retorna o caminho do preset (usa app.state.preset_path se existir)."""
+    preset_path = getattr(request.app.state, "preset_path", None)
+    if preset_path is None:
+        settings = request.app.state.settings
+        return Path(settings.preset).resolve()
+    return Path(preset_path)
 
 
 def _serialize(preset: StdDevV510Preset) -> dict:

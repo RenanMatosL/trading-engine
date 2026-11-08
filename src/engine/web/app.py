@@ -33,7 +33,11 @@ async def lifespan(app: FastAPI):
     settings = EngineSettings()
     app.state.settings = settings
     app.state.db_path = "engine.db"
-    app.state.preset_path = settings.preset
+    
+    # Só define o preset_path se ainda não existir (para não sobrescrever nos testes)
+    if not hasattr(app.state, "preset_path"):
+        app.state.preset_path = str(settings.preset)
+        
     app.state.gateway = await startup_gateway(settings)
     try:
         yield
