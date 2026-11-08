@@ -1,8 +1,5 @@
----
-
-### 📄 2. `AI.md`
-
-```markdown
+📄 AI.md (Completo e Atualizado com F10)
+markdown
 # AI.md — Guia Único de Retomada do Projeto Trading Engine
 
 > **Propósito deste arquivo:** permitir que uma IA (ou o autor) retome o projeto
@@ -43,6 +40,7 @@ uma interface web visual e leve.
 11. **Backtester próprio** (sem MT5, com slippage/spread e métricas).
 12. **Interface Web (F7)** (FastAPI + HTMX + Pico CSS) para monitoramento, backtests, configuração e atualização em tempo real (SSE).
 13. **Modo Armadilha (F9)** (inverte a direção do rompimento).
+14. **Gráfico de Candles (F10)** (visualização dos trades em candles, com volume, timeframes e ferramenta de medição).
 
 ---
 
@@ -78,9 +76,12 @@ uma interface web visual e leve.
 | **F7g** | Frontend: Testes de cobertura (24 testes web) | ✅ fechado |
 | **F8** | Simulador: Parciais e reforço no `SimulatedExecutor` | ✅ fechado |
 | **F9** | Modo Armadilha (Trap): inverte a direção do rompimento | ✅ fechado |
+| **F10** | Gráfico de Candles: visualização dos trades (volume, timeframes, medição) | ✅ fechado |
+| **F11** | Multi-símbolo (`--symbols=WIN$N,WDO$N`) | ✅ fechado |
+| **F12** | Observabilidade (Prometheus `/metrics`) | ✅ fechado |
 
 **Suíte de testes atual:** **241 passed** (`uv run pytest -q`).
-**Projeto completo (F0→F6 + F7a→F7g + F8 + F9).**
+**Projeto completo (F0→F6 + F7a→F7g + F8 + F9 + F10).**
 
 ---
 
@@ -148,7 +149,7 @@ src/engine/
 │ ├── schemas.py # Pydantic schemas
 │ ├── routes/ # Routers (trades, equity, preset, backtest, shadow, stream)
 │ ├── templates/ # base.html, dashboard.html, partials _*.html
-│ └── static/ # htmx, pico, uplot, sse
+│ └── static/ # htmx, pico, uplot, sse, lightweight-charts
 │
 └── cli.py # engine status | check-config | run | shadow |
 
@@ -158,7 +159,8 @@ presets/
 tests/
 ├── fixtures/
 │ ├── v510_expected.csv # 679 candles WIN$N M1 + z-score do MT5
-│ └── sample_bars.csv # 10 candles (F6)
+│ ├── sample_bars.csv # 10 candles (F6)
+│ └── WINZ26_M1_1_a_6_nov_26.csv # 6 dias de nov (novo)
 ├── test_calendar.py # TradingWindow + B3Calendar + session_shift (F5d)
 ├── test_detector.py
 ├── test_presets.py
@@ -296,13 +298,14 @@ text
 - Relatório JSON salvo em `reports/shadow_YYYYMMDD_HHMMSS.json`.
 - **`ShadowComparer` não acessa MT5.** Só `engine shadow` acessa. A rota web `POST /api/shadow` (F7e) também acessa (mas é **read-only**, não coloca ordens).
 
-### `Backtester` (F6 + F8)
+### `Backtester` (F6 + F8 + F10)
 - Consome `list[Bar]` (do `csv_loader`).
 - Constrói `EventFeed`:
   - `BarEvent(bar, zscore)` para cada candle (z-score via `VolumeStdDetector`).
   - 2 `TickEvent` (open e close) para cada candle.
 - Roda `run_simulation(feed, preset, ...)` → `SimulationResult`.
 - **F8:** o `SimulatedExecutor` agora simula parciais e reforço, então o backtest reflete o comportamento real do MT5.
+- **F10:** retorna JSON com `candles`, `volumes`, `markers` e `summary` para o frontend renderizar o gráfico.
 - Calcula métricas via `metrics.py`.
 - Retorna `BacktestResult` (simulation + metrics + start + end + n_bars).
 
@@ -359,32 +362,27 @@ text
 - **Não** detecta mais por string. Usa `req.is_stop`.
 - `is_stop=True` → registra ordem pendente (não abre posição).
 
-### Interface Web (F7)
-- **Stack:** FastAPI + Jinja2 + HTMX + Pico CSS + uPlot + SSE (F7f).
-- **Sem build step.** Sem Node.js. Bundle < 200 KB.
+### Interface Web (F7 + F10)
+- **Stack:** FastAPI + Jinja2 + HTMX + Pico CSS + uPlot + SSE (F7f) + Lightweight Charts (F10).
+- **Sem build step.** Sem Node.js. Bundle < 250 KB.
 - **Partial pattern:** templates começam com `_` (`_backtest.html`) ou são páginas (`backtest.html`).
 - **Regra:** o `app.py` chama `TemplateResponse` com a página; o router chama com o partial.
 - **HTMX JSON:** formulários com `hx-ext="json-enc"` (config).
 - **HTMX multipart:** formulários de upload com `hx-encoding="multipart/form-data"` (backtest).
 - **Read-only:** `/shadow` (F7e) **só compara**, não coloca ordens (usa `ShadowComparer`, não `RealExecutor`).
 - **SSE:** `/stream` (F7f) usa `StreamingResponse` e HTMX `hx-ext="sse"`.
+- **Gráfico de Candles (F10):** Lightweight Charts + volume + timeframes + ferramenta de medição (Shift + arrastar).
 
 ---
 
-## 5. Próximos passos (F10+)
+## 5. Próximos passos (F11+)
 
-O projeto **F0→F6 + F7a→F7g + F8 + F9 está 100% completo**.
+O projeto **F0→F6 + F7a→F7g + F8 + F9 + F10 + f11 + f12 está 100% completo**.
 
-### F10 — Multi-símbolo
+### F13 — Operação Real (validação em demo/real)
 
-**O que implementa:** rodar em N símbolos (WIN$N, WDO$N, etc).
-
-**Hoje:** o `TradingSession` e o `RealExecutor` assumem **1 símbolo**. Precisa refatorar para receber `symbol` no `__init__` (ou N sessões, uma por símbolo).
-
-### F11 — Observabilidade
-
-**O que implementa:** métricas de produção (Prometheus, Grafana, etc).
-- Hoje o motor só loga (structlog). Falta exportar métricas.
+**O que implementa:** rodar o motor na conta demo/real por 1-2 semanas, comparar com o backtest e ajustar os parâmetros.
+- **Isso é a fase mais crítica do projeto:** validar que a estratégia é lucrativa em condições reais de mercado.
 
 ---
 
@@ -424,7 +422,7 @@ uv run engine backtest --csv PATH --output result.json        # backtest com JSO
 
 # Git
 git add -A
-git commit -m "feat(F9): modo armadilha (241 passed)"
+git commit -m "feat(F10): gráfico de candles (241 passed)"
 7. Como o próximo agente deve começar
 Passo 1 — Confirmar estado atual:
 
@@ -433,7 +431,7 @@ uv run pytest -q
 Deve mostrar 241 passed. Se não, PARE e investigue o que quebrou.
 
 Passo 2 — Ler este AI.md inteiro. Principalmente seções 4 (decisões) e
-5 (próximos passos F10+).
+5 (próximos passos F11+).
 
 Passo 3 — Rodar uv run engine check-config para confirmar que o preset
 carrega (7 seções no log).
@@ -446,7 +444,7 @@ Passo 5 — Subir o frontend:
 powershell
 uv run uvicorn engine.web.app:app --reload --port 8000
 Abra http://localhost:8000 → dashboard deve carregar (com SSE).
-Abra http://localhost:8000/backtest → form deve carregar.
+Abra http://localhost:8000/backtest → form deve carregar e o gráfico deve renderizar após o upload do CSV.
 Abra http://localhost:8000/shadow → aviso vermelho + form devem carregar.
 
 Passo 6 — Se algo quebrar:
@@ -551,6 +549,17 @@ SimulatedExecutor.on_tick trata o reason == "trap" como ordem stop (preço preci
 
 trap_arm_points muito grande (ex: 200) pode fazer o trade nunca abrir. Use valores menores (20-50) para calibrar.
 
+F10 (Gráfico de Candles) — Pontos de atenção
+lightweight-charts.js deve estar em static/: o arquivo deve ter ~160 KB. Se tiver 89 bytes, o download falhou.
+
+base.html deve carregar o script: <script src="/static/lightweight-charts.js"></script>.
+
+O gráfico só renderiza após o backtest: o endpoint /api/backtest/chart retorna os candles + markers.
+
+Ferramenta de medição: Shift + arrastar para medir a distância em pontos. Duplo clique limpa.
+
+Timeframes: 1M, 5M, 15M, 30M, 4H, D, M. A agregação é local (no JavaScript), sem chamadas extras ao backend.
+
 9. Referências externas
 EA de referência: StdDevVolumeBreakout.mq5 v4.60 (Renan) — não está
 no repositório, mas é a fonte de verdade. Se precisar comparar, pedir ao autor.
@@ -644,5 +653,7 @@ do navegador antes do Ctrl+C. O formato do frame é data: <linha>\n\n.
 
 Modo trap: trigger_mode é string ("trap" ou "normal"). No modo trap, _make_intent inverte is_buy e recalcula SL/TP com stop_level e take_profit_level. O SimulatedExecutor.on_tick trata reason == "trap" como ordem stop.
 
-F0→F6 + F7a→F7g + F8 + F9 está 100% completo. Próximas fases: F10
-(multi-símbolo), F11 (observabilidade).
+F10: o gráfico de candles usa Lightweight Charts. O endpoint /api/backtest/chart retorna candles, volumes, markers e summary. A ferramenta de medição (Shift + arrastar) calcula a distância em pontos.
+
+F0→F6 + F7a→F7g + F8 + F9 + F10 está 100% completo. Próximas fases: F11
+(multi-símbolo), F12 (observabilidade), F13 (operação real).

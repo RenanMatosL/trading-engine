@@ -94,11 +94,12 @@ def cmd_check_config(args: argparse.Namespace, settings: EngineSettings) -> int:
 def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
     """Loop principal — conecta, processa ticks, decide, executa.
 
-    F5f: suporta N estratégias em paralelo (cada uma com seu `TradingSession`,
-    `RealExecutor`, `TradeEventPoller`, `VolumeStdDetector` e `magic`).
+    F5f: suporta N estratégias em paralelo.
+    F11: suporta N símbolos em paralelo (--symbols=WIN$N,WDO$N).
 
     Flags:
       --strategies=A,B: nomes das estratégias (default: todas do registry)
+      --symbols=WIN$N,WDO$N: símbolos (default: o do .env)
       --dry-run: usa FakeGateway
       --fast: não dorme entre iterações
       --max-ticks N: para após N iterações
@@ -128,7 +129,14 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
         log.error("strategy_resolve_falhou", erro=str(exc))
         return 2
 
-    symbol = settings.mt5.symbol
+    # ------------------------------------------------------------------
+    # 1.5. Resolver símbolos (F11)
+    # ------------------------------------------------------------------
+    symbols_arg = getattr(args, "symbols", None)
+    if symbols_arg:
+        symbols = [s.strip() for s in symbols_arg.split(",") if s.strip()]
+    else:
+        symbols = [settings.mt5.symbol]
 
     # ------------------------------------------------------------------
     # 2. Criar gateway
@@ -146,44 +154,48 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
         return 2
 
     # ------------------------------------------------------------------
-    # 3. Criar N sessões (uma por estratégia)
+    # 3. Criar N sessões (uma por estratégia × símbolo)
     # ------------------------------------------------------------------
     from engine.domain.risk.exchange_calendar import B3Calendar
     calendar = B3Calendar()
 
     sessions: list[dict] = []
     for cfg in configs:
-        store = SqliteStateStore(args.db or "engine.db")
-        session = TradingSession(
-            cfg.preset,
-            state_store=store,
-            calendar=calendar,
-        )
-        executor = RealExecutor(gw, cfg.preset)
-        poller = TradeEventPoller()
-        detector = VolumeStdDetector(
-            length=cfg.preset.detector.length,
-            std_ref=cfg.preset.detector.std_ref,
-            source=cfg.preset.detector.volume_source,
-        )
-        sessions.append({
-            "config": cfg,
-            "store": store,
-            "session": session,
-            "executor": executor,
-            "poller": poller,
-            "detector": detector,
-            "magic": cfg.magic,
-            "last_bar_time": None,
-            "last_poll_time": datetime.now(tz=timezone.utc) - timedelta(minutes=5),
-            "pending_reentry": None,
-            "breakeven_applied": False,
-        })
-        log.info(
-            "strategy_session_created",
-            name=cfg.name, magic=cfg.magic,
-            preset=cfg.preset.name,
-        )
+        for symbol in symbols:
+            store = SqliteStateStore(args.db or "engine.db")
+            session = TradingSession(
+                cfg.preset,
+                symbol=symbol,  # F11: passa o símbolo
+                state_store=store,
+                calendar=calendar,
+            )
+            executor = RealExecutor(gw, cfg.preset)
+            poller = TradeEventPoller()
+            detector = VolumeStdDetector(
+                length=cfg.preset.detector.length,
+                std_ref=cfg.preset.detector.std_ref,
+                source=cfg.preset.detector.volume_source,
+            )
+            sessions.append({
+                "config": cfg,
+                "store": store,
+                "session": session,
+                "executor": executor,
+                "poller": poller,
+                "detector": detector,
+                "symbol": symbol,  # F11: símbolo desta sessão
+                "magic": cfg.magic,
+                "last_bar_time": None,
+                "last_poll_time": datetime.now(tz=timezone.utc) - timedelta(minutes=5),
+                "pending_reentry": None,
+                "breakeven_applied": False,
+            })
+            log.info(
+                "strategy_session_created",
+                name=cfg.name, magic=cfg.magic,
+                preset=cfg.preset.name,
+                symbol=symbol,
+            )
 
     sleep_s = 0.0 if args.fast else (args.poll_interval or 1.0)
     max_ticks = args.max_ticks or 0
@@ -192,9 +204,10 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
 
     log.info(
         "engine_run_start",
-        symbol=symbol, dry_run=args.dry_run,
-        n_strategies=len(sessions),
-        strategies=[s["config"].name for s in sessions],
+        symbols=symbols, dry_run=args.dry_run,
+        n_strategies=len(configs),
+        n_sessions=len(sessions),
+        strategies=[c.name for c in configs],
         max_ticks=max_ticks, poll_interval=sleep_s,
     )
 
@@ -208,35 +221,36 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
                 log.info("engine_run_max_ticks", ticks=ticks)
                 break
 
-            # Preço corrente (1 leitura por tick, compartilhada)
-            try:
-                tick = gw.symbol_info_tick(symbol)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("tick_falhou", erro=str(exc))
-                if sleep_s > 0:
-                    time.sleep(sleep_s)
-                continue
+            # Para cada símbolo, busca o tick e processa as sessões daquele símbolo
+            for symbol in symbols:
+                try:
+                    tick = gw.symbol_info_tick(symbol)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("tick_falhou", symbol=symbol, erro=str(exc))
+                    continue
 
-            now = tick.time
-            snapshot = MarketSnapshot(ask=tick.ask, bid=tick.bid, now=now)
+                now = tick.time
+                snapshot = MarketSnapshot(ask=tick.ask, bid=tick.bid, now=now)
 
-            # Bars fechadas (1 leitura por tick, compartilhada)
-            try:
-                bars = gw.closed_bars(symbol, preset.detector.timeframe, 1)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("bars_falhou", erro=str(exc))
-                bars = []
+                # Bars fechadas
+                try:
+                    bars = gw.closed_bars(symbol, preset.detector.timeframe, 1)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("bars_falhou", symbol=symbol, erro=str(exc))
+                    bars = []
 
-            # Para cada estratégia, processa o mesmo tick
-            for st in sessions:
-                _process_strategy_tick(
-                    st=st,
-                    gw=gw,
-                    symbol=symbol,
-                    snapshot=snapshot,
-                    bars=bars,
-                    end_of_day_done_today=end_of_day_done_today,
-                )
+                # Processa todas as sessões deste símbolo
+                for st in sessions:
+                    if st["symbol"] != symbol:
+                        continue
+                    _process_strategy_tick(
+                        st=st,
+                        gw=gw,
+                        symbol=symbol,
+                        snapshot=snapshot,
+                        bars=bars,
+                        end_of_day_done_today=end_of_day_done_today,
+                    )
 
             if sleep_s > 0:
                 time.sleep(sleep_s)
@@ -256,7 +270,7 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
 
 
 #+------------------------------------------------------------------+
-#| F5f: processa 1 tick para 1 estratégia                          |
+#| F5f/F11: processa 1 tick para 1 sessão (estratégia × símbolo)    |
 #+------------------------------------------------------------------+
 def _process_strategy_tick(
     *,
@@ -267,7 +281,7 @@ def _process_strategy_tick(
     bars: list,
     end_of_day_done_today: dict[str, datetime],
 ) -> None:
-    """Processa 1 tick para 1 estratégia (extraído do `cmd_run` para clareza)."""
+    """Processa 1 tick para 1 sessão (estratégia × símbolo)."""
     cfg = st["config"]
     session = st["session"]
     executor = st["executor"]
@@ -317,6 +331,7 @@ def _process_strategy_tick(
             log.info(
                 "engine_reentry_order",
                 strategy=cfg.name,
+                symbol=symbol,
                 price=ri.entry_price, is_buy=ri.is_buy,
                 contracts=ri.contracts,
                 ticket=reentry_res.order_ticket,
@@ -329,7 +344,7 @@ def _process_strategy_tick(
         )
         st["last_poll_time"] = now
     except Exception as exc:  # noqa: BLE001
-        log.warning("poller_falhou", strategy=cfg.name, erro=str(exc))
+        log.warning("poller_falhou", strategy=cfg.name, symbol=symbol, erro=str(exc))
         events = []
 
     for ev in events:
@@ -371,6 +386,7 @@ def _process_strategy_tick(
                         log.info(
                             "breakeven_applied",
                             strategy=cfg.name,
+                            symbol=symbol,
                             position=pos, price=be_price,
                         )
 
@@ -385,16 +401,19 @@ def _process_strategy_tick(
         )
         if not in_window:
             today = now.date()
-            last = end_of_day_done_today.get(cfg.name)
+            key = f"{cfg.name}:{symbol}"
+            last = end_of_day_done_today.get(key)
             if last is None or last.date() != today:
-                end_of_day_done_today[cfg.name] = now
+                end_of_day_done_today[key] = now
                 results = executor.close_all_at_end_of_day(symbol, now)
                 for r in results:
                     if r.is_ok:
                         session.notify_position_closed(now)
                 log.info(
                     "end_of_day_closed",
-                    strategy=cfg.name, n=len(results),
+                    strategy=cfg.name,
+                    symbol=symbol,
+                    n=len(results),
                 )
 
     # 6. Persiste
@@ -417,7 +436,7 @@ def cmd_shadow(args: argparse.Namespace, settings: EngineSettings) -> int:
         return 2
 
     store = SqliteStateStore(args.db or "engine_shadow.db")
-    session = TradingSession(preset, state_store=store)
+    session = TradingSession(preset, symbol=symbol, state_store=store)
     executor = RealExecutor(gw, preset)
     poller = TradeEventPoller()
     detector = VolumeStdDetector(
@@ -517,12 +536,9 @@ def cmd_shadow(args: argparse.Namespace, settings: EngineSettings) -> int:
     )
     return 0
 
-def cmd_backtest(args: argparse.Namespace, settings: EngineSettings) -> int:
-    """Roda backtest sobre um CSV de candles (F6).
 
-    Uso:
-        engine backtest --csv PATH [--preset PATH] [--slippage N] [--spread N]
-    """
+def cmd_backtest(args: argparse.Namespace, settings: EngineSettings) -> int:
+    """Roda backtest sobre um CSV de candles (F6)."""
     from datetime import datetime as _dt
 
     # Carrega preset
@@ -597,7 +613,6 @@ def cmd_backtest(args: argparse.Namespace, settings: EngineSettings) -> int:
 
     # Exporta trades + equity (opcional)
     if args.output:
-        import json
         from pathlib import Path
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -663,6 +678,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--fast", action="store_true")
     p_run.add_argument("--strategies", default=None,
                        help="Estratégias separadas por vírgula (default: todas)")
+    p_run.add_argument("--symbols", default=None,
+                       help="Símbolos separados por vírgula (default: o do .env)")  # F11
 
     p_shadow = sub.add_parser("shadow", help="Modo sombra: compara decisões com EA")
     p_shadow.add_argument("--ea-magic", type=int, required=True)

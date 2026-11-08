@@ -1,4 +1,4 @@
-"""TradingSession — orquestrador de decisão do EA v4.60 (F2c + F3b + F3c + F5a + F5c + F9).
+"""TradingSession — orquestrador de decisão do EA v4.60 (F2c + F3b + F3c + F5a + F5c + F9 + F11).
 
 F2c: on_bar_closed + on_tick (filtros de sessão + TradeIntent).
 F3b: on_trade_event + rastreamento do trade atual.
@@ -6,6 +6,7 @@ F3c: save_state / _load_state / _snapshot (persistência opcional).
 F5a: _make_intent preenche `partials`; on_trade_event rastreia parciais.
 F5c: _maybe_arm_reentry + ReentryIntent (reforço no retorno à entrada).
 F9:  modo armadilha (trigger_mode=TRAP) — inverte a direção do rompimento.
+F11: multi-símbolo (symbol no __init__).
 
 Não executa ordens. Não gerencia posições. Não acessa MT5.
 """
@@ -55,6 +56,8 @@ from engine.domain.strategy.regions import (
     CandidateMode as RegionCandidateMode,
     RegionManager,
 )
+from engine.application.metrics_exporter import record_trade_opened, record_trade_closed
+
 
 log = structlog.get_logger()
 
@@ -105,12 +108,14 @@ class TradingSession:
         self,
         preset: StdDevV510Preset,
         *,
+        symbol: str = "WIN$N",  # F11: multi-símbolo
         region_manager: RegionManager | None = None,
         pricing_config: PricingConfig | None = None,
         state_store: StateStore | None = None,
         calendar: "B3Calendar | None" = None,
     ) -> None:
         self._preset = preset
+        self._symbol = symbol  # F11: guarda o símbolo
         self._pricing = pricing_config or _preset_to_pricing(preset)
 
         # F5e: calendar B3 (default = B3Calendar() em produção)
@@ -158,6 +163,10 @@ class TradingSession:
     # ----------------------------------------------------------------
     # Propriedades (inspeção/testes)
     # ----------------------------------------------------------------
+    @property
+    def symbol(self) -> str:
+        return self._symbol
+
     @property
     def regions(self) -> RegionManager:
         return self._regions
@@ -322,11 +331,13 @@ class TradingSession:
         )
         for r in just_broke:
             log.info("breakout", bar_time=r.bar_time.isoformat(),
-                     is_buy=r.is_buy, stop=r.stop_loss, tp=r.take_profit)
+                     is_buy=r.is_buy, stop=r.stop_loss, tp=r.take_profit,
+                     symbol=self._symbol)
 
         expired = self._regions.sweep_expired(now)
         for r in expired:
-            log.info("region_expired", bar_time=r.bar_time.isoformat())
+            log.info("region_expired", bar_time=r.bar_time.isoformat(),
+                     symbol=self._symbol)
 
         if just_broke or expired:
             self.save_state()
@@ -408,6 +419,7 @@ class TradingSession:
                     entry=entry, is_buy=is_buy,
                     price=snapshot.bid if is_buy else snapshot.ask,
                     arm_points=arm_points,
+                    symbol=self._symbol,
                 )
             return None
 
@@ -428,6 +440,7 @@ class TradingSession:
             entry=entry, is_buy=is_buy,
             price=snapshot.bid if is_buy else snapshot.ask,
             contracts=risk.reentry_contracts,
+            symbol=self._symbol,
         )
         return ReentryIntent(
             entry_price=entry,
@@ -463,6 +476,7 @@ class TradingSession:
         self._partials_filled = []
         self._reentry_armed = False
         self._reentry_done = False
+        record_trade_opened(self._symbol)  # F12: métrica
         self.save_state()
 
     def notify_position_closed(self, now: datetime) -> None:
@@ -486,6 +500,7 @@ class TradingSession:
                 position=event.position_ticket,
                 volume=event.deal.volume,
                 price=event.deal.price,
+                symbol=self._symbol,
             )
             self.save_state()
             return
@@ -496,6 +511,7 @@ class TradingSession:
                 position=event.position_ticket,
                 is_tp=event.is_tp,
                 price=event.deal.price,
+                symbol=self._symbol,
             )
             self.save_state()
             return
@@ -503,7 +519,8 @@ class TradingSession:
         if isinstance(event, EntryFilled):
             self._current_entry_position = event.position_ticket
             log.info("trade_event_entry", position=event.position_ticket,
-                     volume=event.deal.volume, price=event.deal.price)
+                     volume=event.deal.volume, price=event.deal.price,
+                     symbol=self._symbol)
             self.save_state()
             return
 
@@ -513,7 +530,8 @@ class TradingSession:
                 self._partials_filled.append(tier)
             log.info("trade_event_partial", position=event.position_ticket,
                      volume=event.deal.volume, remaining=event.remaining_volume,
-                     tier=tier, partials_filled=list(self._partials_filled))
+                     tier=tier, partials_filled=list(self._partials_filled),
+                     symbol=self._symbol)
             self.save_state()
             return
 
@@ -572,19 +590,23 @@ class TradingSession:
         self.notify_position_closed(now)
 
         if region_time is None:
-            log.info("trade_event_sl_no_region", position=position_ticket)
+            log.info("trade_event_sl_no_region", position=position_ticket,
+                     symbol=self._symbol)
             return
 
         risk = self._preset.risk
         if risk.reuse_sl_signal:
             self._regions.rearm_after_sl(region_time, allow_unlimited=True)
-            log.info("trade_event_sl_rearm_unlimited", region=region_time.isoformat())
+            log.info("trade_event_sl_rearm_unlimited", region=region_time.isoformat(),
+                     symbol=self._symbol)
         elif risk.use_reverse:
             self._regions.rearm_after_sl(region_time, allow_unlimited=False)
-            log.info("trade_event_sl_rearm_once", region=region_time.isoformat())
+            log.info("trade_event_sl_rearm_once", region=region_time.isoformat(),
+                     symbol=self._symbol)
         else:
             self._regions.consume(region_time)
-            log.info("trade_event_sl_consume", region=region_time.isoformat())
+            log.info("trade_event_sl_consume", region=region_time.isoformat(),
+                     symbol=self._symbol)
         self.save_state()
 
     def _handle_tp(
@@ -609,9 +631,11 @@ class TradingSession:
 
         if region_time is not None:
             self._regions.consume(region_time)
-            log.info("trade_event_tp_consume", region=region_time.isoformat())
+            log.info("trade_event_tp_consume", region=region_time.isoformat(),
+                     symbol=self._symbol)
         else:
-            log.info("trade_event_tp_no_region", position=position_ticket)
+            log.info("trade_event_tp_no_region", position=position_ticket,
+                     symbol=self._symbol)
 
         self.save_state()
 
@@ -637,7 +661,8 @@ class TradingSession:
 
         if region_time is not None:
             self._regions.consume(region_time)
-            log.info("trade_event_close_consume", region=region_time.isoformat())
+            log.info("trade_event_close_consume", region=region_time.isoformat(),
+                     symbol=self._symbol)
 
         self.save_state()
 
@@ -649,7 +674,7 @@ class TradingSession:
         deal_price: float = 0.0,
         deal_volume: float = 0.0,
     ) -> None:
-        """Grava o trade fechado no `state_store` (F7b-1)."""
+        """Grava o trade fechado no `state_store` (F7b-1 + F12)."""
         if self._store is None:
             return
         if self._current_entry_price is None:
@@ -673,11 +698,14 @@ class TradingSession:
             exit_price = deal_price
             volume = deal_volume
         else:
-            # Aproximação (sem deal): PnL = 0
             pnl_points = 0.0
             pnl_money = 0.0
             exit_price = entry_price
             volume = 0.0
+
+        # F12: métrica (só registra se houver PnL real)
+        if pnl_money != 0.0:
+            record_trade_closed(self._symbol, pnl_money)
 
         trade = TradeRecord(
             id=None,
@@ -697,7 +725,7 @@ class TradingSession:
         try:
             self._store.save_trade(trade)
         except Exception as exc:  # noqa: BLE001
-            log.warning("save_trade_falhou", erro=str(exc))
+            log.warning("save_trade_falhou", erro=str(exc), symbol=self._symbol)
 
     # ----------------------------------------------------------------
     # Filtros de sessão

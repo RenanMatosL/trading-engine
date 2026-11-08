@@ -21,11 +21,12 @@
 8. [Fase 3 — Loop real em demo](#8-fase-3--loop-real-em-demo)
 9. [Fase 4 — Modo sombra (comparar com o EA)](#9-fase-4--modo-sombra-comparar-com-o-ea)
 10. [Fase 5 — Backtest (sem MT5)](#10-fase-5--backtest-sem-mt5)
-11. [Fase 6 — Operação real (conta real)](#11-fase-6--operação-real-conta-real)
-12. [Recursos detalhados](#12-recursos-detalhados)
-13. [Como ver ganhos, perdas e métricas](#13-como-ver-ganhos-perdas-e-métricas)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Glossário](#15-glossário)
+11. [Operação em Conta Demo e Real](#11-operação-em-conta-demo-e-real)
+12. [Calibração (usando o gráfico)](#12-calibração-usando-o-gráfico)
+13. [Recursos detalhados](#13-recursos-detalhados)
+14. [Como ver ganhos, perdas e métricas](#14-como-ver-ganhos-perdas-e-métricas)
+15. [Troubleshooting](#15-troubleshooting)
+16. [Glossário](#16-glossário)
 
 ---
 
@@ -158,12 +159,19 @@ INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 Abra http://localhost:8000 → dashboard.
 
-5.2 — Telas do frontend
-URL	O que mostra
-/	Dashboard (status em tempo real via SSE + equity curve + tabela de trades)
-/config	Edição do preset (formulário com 7 blocos)
-/backtest	Backtest (upload CSV + resultado)
-/shadow	Shadow (comparar com EA — read-only)
+📄 Seção 5.2 — Telas do frontend
+markdown
+### 5.2 — Telas do frontend
+
+| URL | O que mostra |
+|---|---|
+| `/` | **Dashboard** (status em tempo real via SSE + equity curve + tabela de trades) |
+| `/config` | **Edição do preset** (formulário com 7 blocos) |
+| `/backtest` | **Backtest** (upload CSV + resultado numérico + gráfico de candles com volume e ferramentas) |
+| `/shadow` | **Shadow** (comparar com EA — read-only) |
+| `/metrics` | **Métricas Prometheus** (formato `text/plain`, para monitoramento externo via Grafana/Prometheus) |
+
+
 5.3 — Dashboard (/)
 3 cards no topo (atualizam a cada 2s via SSE):
 
@@ -217,7 +225,7 @@ Recarregar (descarta): descarta edições, recarrega do YAML.
 Segurança: o backup .bak é criado em presets/stddev_v510_default.yaml.bak antes de sobrescrever.
 
 5.5 — Backtest (/backtest)
-O que faz: roda o motor sobre um CSV de candles (sem MT5). Agora com parciais e reforço (F8), refletindo com precisão o comportamento real.
+O que faz: roda o motor sobre um CSV de candles (sem MT5). Agora com parciais e reforço (F8), refletindo com precisão o comportamento real. F10: visualização gráfica com candles, volume, timeframes e ferramenta de medição.
 
 Passo a passo:
 
@@ -227,7 +235,21 @@ Ajuste o saldo inicial (default: 100.000).
 
 Clique em "Rodar backtest".
 
-O formulário é substituído pelo card verde "Resultado do Backtest" com as métricas (Candles, Trades, Win Rate, PnL, Return, Sharpe, Max Drawdown, Profit Factor, Avg Win / Loss).
+O card verde com as métricas (Candles, Trades, Win Rate, PnL, Return, Sharpe, Max Drawdown, Profit Factor, Avg Win / Loss) aparece no topo.
+
+O gráfico de candles é renderizado abaixo, com:
+
+Setas verdes (compras) e vermelhas (vendas).
+
+Círculos (saídas) nos candles onde os trades foram fechados.
+
+Volume (histograma) abaixo dos candles.
+
+Seletor de timeframe (1M, 5M, 15M, 30M, 4H, D, M).
+
+Shift + arrastar para medir a distância em pontos entre dois níveis de preço.
+
+Duplo clique para limpar a medição.
 
 Nota 1: o CSV precisa ter no mínimo 180 candles para o detector gerar trades. O fixture sample_bars.csv tem 10 candles, então o resultado será Trades=0 (comportamento esperado).
 
@@ -468,69 +490,124 @@ opposite_extreme	Entrada no extremo oposto (pullback profundo).
 immediate	Entrada a mercado no instante do rompimento.
 Nota: Com o modo broken_extreme, o backtest tem gerado resultados muito melhores (ex: +122% de retorno em 9 meses, com 198 trades). O modo trap também está funcional.
 
-11. Fase 6 — Operação real (conta real)
-⚠️ Só faça isso depois de validar em demo por 1-2 semanas.
+11. Operação em Conta Demo e Real
+Objetivo: rodar o motor na próxima segunda-feira usando os parâmetros validados no backtest, monitorando em tempo real.
 
-11.1 — Pré-requisitos
-engine shadow com match_rate > 0.95 por 1-2 semanas.
+11.1 — Preparação (Véspera / Fim de semana)
+Abra o MT5 e faça login na conta (demo ou real).
 
-Conta real logada no MT5.
+Confirme que o símbolo está no Market Watch (ex: WINZ26).
 
-.env com credenciais reais.
+Edite o YAML (presets/stddev_v510_default.yaml) com os parâmetros que você validou no backtest (ex: entry.level_mode: broken_extreme, risk.total_contracts: 10, etc).
 
-Backup do engine.db (se existir).
+Teste a conexão:
 
-11.2 — Rodar com cautela
+powershell
+uv run engine status
+Deve mostrar a conta, saldo e candles.
+
+Rode o backtest novamente com o CSV do último pregão para confirmar que o motor está calibrado (opcional, mas recomendado).
+
+11.2 — Início da Operação (Segunda-feira, antes do pregão)
+Abra o MT5 e deixe logado na conta (demo ou real).
+
+Inicie o frontend (para monitorar):
+
+powershell
+uv run uvicorn engine.web.app:app --reload --port 8000
+Abra outra janela do CMD e inicie o motor em tempo real:
+
+Para conta demo:
+
+powershell
+uv run engine run --demo --db engine_demo.db --poll-interval 2
+Para conta real:
+
 powershell
 uv run engine run --db engine_real.db --poll-interval 1
-Sem --dry-run, sem --demo. O motor vai operar de verdade.
+Verifique o log:
 
-11.3 — Monitoramento
-Janelas abertas:
+engine_run_start deve aparecer.
 
-MT5 (aba "Trade"): ordens, posições, histórico.
+O motor vai começar a monitorar o mercado.
 
-Frontend (http://localhost:8000): dashboard + equity + trades.
+Abra o dashboard em http://localhost:8000 para acompanhar.
 
-Terminal do motor (log em tempo real).
+11.3 — Acompanhamento e Parada
+No MT5 (aba "Trade"): veja as ordens sendo abertas (pendentes e a mercado).
 
-engine_real.db (opcional, via DB Browser for SQLite).
+No frontend: acompanhe o equity curve e a tabela de trades.
 
-11.4 — Parar com segurança
-Ctrl+C no terminal do motor.
-
-O motor salva o estado (save_state) e fecha o SQLite.
+Para parar: pressione Ctrl+C no terminal do motor. Ele salva o estado e fecha o SQLite.
 
 Não feche o MT5 abruptamente.
 
-11.5 — Checklist de operação real
-□ .env com credenciais reais (senha em local seguro).
-□ Conta real com saldo compatível com risk_value (não arrisque > 1% por trade).
-□ engine_real.db em disco local (não em rede).
+11.4 — Checklist de Operação (Segunda-feira)
+□ .env com credenciais da conta (demo ou real).
+□ YAML com os parâmetros validados no backtest.
 □ MT5 aberto e logado.
+□ Frontend rodando (uvicorn).
+□ Motor rodando (engine run).
+□ Dashboard acessível em http://localhost:8000.
+□ Saldo compatível com o risco (não arrisque > 1% por trade).
 □ Windows não vai dormir/desligar.
 □ Internet estável.
-□ Logs sendo salvos.
-12. Recursos detalhados
-12.1 — engine status
+11.5 — Aviso Importante: Modo Trap
+Se você estiver usando o modo trap (trigger_mode: trap), saiba que:
+
+O motor vai inverter as operações (vender quando o preço sobe, comprar quando desce).
+
+No backtest, o modo trap gerou -82% de retorno em 9 meses (perdas consistentes).
+
+Não use o modo trap em conta real sem antes validar em demo por pelo menos 1 mês.
+
+12. Calibração (usando o gráfico)
+O que fazer com o resultado do backtest?
+
+Abra o gráfico em /backtest (após rodar o backtest).
+
+Observe os markers:
+
+Setas verdes (compras) e vermelhas (vendas).
+
+Círculos (saídas: TP, SL, fim do dia).
+
+Use a ferramenta de medição (Shift + arrastar) para ver a distância em pontos:
+
+Se os stops estão muito distantes, reduza o sl_points (ex: de 200 para 100).
+
+Se os TPs estão muito próximos, aumente o final_tp_points (ex: de 600 para 1200).
+
+Ajuste o entry.level_mode:
+
+broken_extreme: entrada no rompimento (pullback raso). Melhor para tendências.
+
+default: entrada no meio da região. Melhor para reversões.
+
+Teste novamente com o mesmo CSV e compare os resultados.
+
+Dica: Use o seletor de timeframe (1M, 5M, 15M, etc) para ver o padrão em diferentes escalas.
+
+13. Recursos detalhados
+13.1 — engine status
 Lê a conta, símbolo, últimos 180 candles, e calcula o z-score do último candle. Não coloca ordens.
 
-12.2 — engine check-config
+13.2 — engine check-config
 Valida o preset YAML (pydantic). Não conecta em MT5.
 
-12.3 — engine run
+13.3 — engine run
 Loop real (dry-run, demo ou real). Flags: --dry-run, --demo, --db, --poll-interval, --max-ticks, --fast, --strategies.
 
-12.4 — engine shadow
+13.4 — engine shadow
 Modo sombra (compara com o EA). Flags: --ea-magic, --py-magic, --duration, --poll-interval, --tolerance-points, --report-dir, --db.
 
-12.5 — engine backtest
+13.5 — engine backtest
 Backtest sobre CSV. Flags: --csv, --preset, --from-date, --to-date, --initial-balance, --slippage, --spread, --output.
 
-12.6 — Frontend (uvicorn)
+13.6 — Frontend (uvicorn)
 Dashboard + config + backtest + shadow. Flags: --reload, --port.
 
-12.7 — Parciais (tiers 1/2/3)
+13.7 — Parciais (tiers 1/2/3)
 O que faz: divide a saída da posição em 3 partes (tiers). Cada tier vende partial_contracts quando o preço atinge partial_points a favor.
 
 Configuração no YAML:
@@ -546,7 +623,7 @@ risk:
   partial3_points: 600
   partial3_contracts: 1
   breakeven_after_partial: true
-12.8 — Reforço
+13.8 — Reforço
 O que faz: após a entrada, se o preço avança reentry_arm_points a favor e volta ao preço de entrada, o motor reforça a posição.
 
 Configuração no YAML:
@@ -558,7 +635,7 @@ risk:
   reentry_arm_points: 200
   reentry_tp_points: 200
   reentry_sl_points: 200
-12.9 — By-risk sizing
+13.9 — By-risk sizing
 O que faz: em vez de contratos fixos, calcula o lote pelo risco.
 
 Configuração no YAML:
@@ -568,18 +645,18 @@ risk:
   sizing_mode: by_risk
   risk_mode: percent_balance
   risk_value: 1.0
-12.10 — Calendário B3
+13.10 — Calendário B3
 O que faz: validade de regiões por pregões reais (dias úteis, sem feriados), não dias corridos.
 
 Feriados hardcoded 2026-2027 (em exchange_calendar.py). Atualizar 2028+.
 
-12.11 — Multi-estratégia
+13.11 — Multi-estratégia
 O que faz: roda N estratégias no mesmo motor, cada uma com seu magic.
 
 powershell
 uv run engine run --dry-run --fast --max-ticks 3 --strategies=stddev_v510
-13. Como ver ganhos, perdas e métricas
-13.1 — No frontend (http://localhost:8000)
+14. Como ver ganhos, perdas e métricas
+14.1 — No frontend (http://localhost:8000)
 Card de status: conta, símbolo, detector.
 
 Equity Curve (uPlot): curva do saldo acumulado.
@@ -590,21 +667,21 @@ Backtest (/backtest): upload de CSV, métricas completas e retorno.
 
 Shadow (/shadow): Match Rate, divergências, total EA/Py.
 
-13.2 — No log do engine run
+14.2 — No log do engine run
 Log estruturado (structlog) mostra cada ordem e cada evento:
 
 text
 executor_place_order  is_buy=True volume=6 price=1100 retcode=10009 ok=True
 trade_event_entry     position=12345 volume=6 price=1100
 trade_event_tp_consume region=...
-13.3 — No MT5 (aba "Trade")
+14.3 — No MT5 (aba "Trade")
 "Posições": posições abertas.
 
 "Histórico": trades fechados.
 
 "Ordens": ordens pendentes.
 
-13.4 — No SQLite (engine.db)
+14.4 — No SQLite (engine.db)
 Use DB Browser for SQLite para abrir engine.db:
 
 Tabela regions: regiões ativas, consumidas, rearmadas.
@@ -613,19 +690,19 @@ Tabela session_state: snapshot JSON.
 
 Tabela trades (F7b-1): trades fechados.
 
-13.5 — No backtest (engine backtest)
+14.5 — No backtest (engine backtest)
 text
 backtest_result  n_trades=42 winners=25 losers=17 win_rate=0.5952
                  total_pnl=12345.67 return_pct=12.35 sharpe=1.23
                  max_drawdown_pct=4.56 profit_factor=1.89
-13.6 — No shadow (reports/shadow_*.json)
+14.6 — No shadow (reports/shadow_*.json)
 json
 {
   "matched": 3, "ea_only": 0, "py_only": 0, "mismatches": 0,
   "total_ea": 3, "total_py": 3, "match_rate": 1.0
 }
-14. Troubleshooting
-14.1 — mt5_indisponivel (IPC failed)
+15. Troubleshooting
+15.1 — mt5_indisponivel (IPC failed)
 Causa: MT5 não está aberto, ou "Python Integration" desabilitado.
 
 Fix:
@@ -638,17 +715,17 @@ Reinicie o MT5.
 
 Rode de novo.
 
-14.2 — strategy_resolve_falhou: 'X' não registrada
+15.2 — strategy_resolve_falhou: 'X' não registrada
 Causa: --strategies=X com nome que não está no StrategyRegistry.
 
 Fix: use o nome da estratégia (stddev_v510), não o nome do preset (v510_default).
 
-14.3 — uvicorn travado em "Waiting for application startup"
+15.3 — uvicorn travado em "Waiting for application startup"
 Causa: startup_gateway tentando conectar no MT5 (sem IPC).
 
-Fix: resolva o IPC (14.1) ou use FakeGateway (comentar login no .env).
+Fix: resolva o IPC (15.1) ou use FakeGateway (comentar login no .env).
 
-14.4 — Frontend 404 Not Found em /api/trades ou /api/equity
+15.4 — Frontend 404 Not Found em /api/trades ou /api/equity
 Causa: os routers não estão incluídos no app.py.
 
 Fix: confirme:
@@ -657,7 +734,7 @@ cmd
 findstr /C:"include_router" src\engine\web\app.py
 Esperado: 6 linhas (status + trades + equity + preset + backtest + shadow + stream).
 
-14.5 — TemplateNotFound no frontend
+15.5 — TemplateNotFound no frontend
 Causa: template faltando.
 
 Fix: confirme:
@@ -666,50 +743,59 @@ cmd
 dir src\engine\web\templates\
 Esperado: base.html, dashboard.html, _status.html, _status_sse.html, _trades.html, _equity.html, config.html, _preset.html, backtest.html, _backtest.html, shadow.html, _shadow.html.
 
-14.6 — unhashable type: 'dict' no frontend
+15.6 — unhashable type: 'dict' no frontend
 Causa: TemplateResponse com assinatura antiga (Starlette < 0.30).
 
 Fix: use TemplateResponse(request=request, name="...", context={...}) (kwargs explícitos).
 
-14.7 — httpx2 faltando nos testes
+15.7 — httpx2 faltando nos testes
 Causa: TestClient precisa do httpx.
 
 Fix: uv pip install httpx + adicionar ao pyproject.toml (extra dev).
 
-14.8 — uvicorn não funciona sem uv run
+15.8 — uvicorn não funciona sem uv run
 Fix: sempre uv run uvicorn engine.web.app:app --reload --port 8000.
 
-14.9 — engine.db não persiste
+15.9 — engine.db não persiste
 Causa: --db :memory: (SQLite em memória).
 
 Fix: use --db engine.db (padrão).
 
-14.10 — 0 trades no backtest
+15.10 — 0 trades no backtest
 Causa: CSV com poucos candles (< 180).
 
 Fix: use um CSV com 200+ candles.
 
-14.11 — TypeError no routes/shadow.py (TradeIntent)
+15.11 — TypeError no routes/shadow.py (TradeIntent)
 Causa: o rascunho do router tentou construir um TradeIntent completo, mas faltaram campos obrigatórios.
 
 Fix: o router corrigido usa _ShadowTrade (duck typing) com apenas bar_time, is_buy e entry_price. Não precisa mexer em nada.
 
-14.12 — uvicorn não fecha com Ctrl+C
+15.12 — uvicorn não fecha com Ctrl+C
 Causa: O navegador está com a aba do dashboard aberta, e a conexão SSE (/stream) mantém o servidor ativo.
 
 Fix: Feche a aba do navegador (ou navegue para /config) antes de dar Ctrl+C. Se já travou, aperte Ctrl+C duas vezes.
 
-14.13 — Alterações no /config não refletem no /backtest
+15.13 — Alterações no /config não refletem no /backtest
 Causa: O YAML salvo pelo /config pode estar em cache ou o backtest.py está lendo de settings.preset (default) em vez do app.state.preset_path.
 
 Fix: Edite o YAML manualmente (em presets/stddev_v510_default.yaml) e rode o backtest. Confirme o conteúdo com type presets\stddev_v510_default.yaml | findstr "level_mode sl_points".
 
-14.14 — Backtest "trava" com arquivos muito grandes (> 100k candles)
+15.14 — Backtest "trava" com arquivos muito grandes (> 100k candles)
 Causa: O backtester roda no mesmo processo do FastAPI. Arquivos muito grandes (ex: 1M candles) bloqueiam a interface.
 
 Fix: Para arquivos grandes, rode o backtest via CLI (terminal), que é mais rápido e não bloqueia a interface.
 
-15. Glossário
+15.15 — Gráfico de candles não aparece
+Causa: O lightweight-charts.js não foi baixado ou o navegador está com cache.
+
+Fix: Baixe o lightweight-charts.js:
+
+cmd
+curl -o src\engine\web\static\lightweight-charts.js https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js
+Confirme o tamanho (~160 KB). Depois, recarregue a página com Ctrl+F5.
+
+16. Glossário
 Termo	Significado
 Região	Área de trade-location criada por um candle-sinal (máx, mín, meio)
 Candle-sinal	Candle com z-score de volume ≥ std_ref
@@ -726,7 +812,8 @@ B3Calendar	Calendário de pregões da B3 (feriados 2026-2027)
 HTMX	Biblioteca JS (14 KB) que faz AJAX sem escrever JS
 Pico.css	CSS semântico (dark mode nativo)
 uPlot	Biblioteca de gráficos (50 KB)
-Frontend	Dashboard web (FastAPI + HTMX + Pico + uPlot + SSE)
+Lightweight Charts	Biblioteca de gráficos de candles (45 KB) — F10
+Frontend	Dashboard web (FastAPI + HTMX + Pico + uPlot + SSE + Lightweight Charts)
 Modo Armadilha	Modo onde a operação é invertida (rompeu p/ cima = venda)
 Trap Arm Points	Distância em pontos além do extremo para armar a armadilha
 Trap SL Points	Stop Loss do modo armadilha, a partir da entrada

@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+
 from engine.application.status import get_status
 from engine.config.presets import load_preset
 from engine.config.settings import EngineSettings
@@ -19,8 +20,6 @@ from engine.web.schemas import (
     DetectorSchema,
     StatusResponse,
 )
-
-
 log = structlog.get_logger()
 
 _BASE_DIR = Path(__file__).parent
@@ -188,5 +187,8 @@ app.include_router(equity_routes.router)
 app.include_router(preset_routes.router)  
 app.include_router(backtest_routes.router)
 app.include_router(shadow_routes.router)
-app.include_router(stream_routes.router)                  
+app.include_router(stream_routes.router)    
+from engine.web.routes import metrics as metrics_routes
+app.include_router(metrics_routes.router)              
+              
 
