@@ -31,4 +31,10 @@
   <article><p>Carregando trades...</p></article>
 </div>
 
+<div hx-get="/api/trades/log"
+     hx-trigger="load, every 5s"
+     hx-swap="innerHTML">
+  <p>Carregando log de trades...</p>
+</div>
+
 {% endblock %}

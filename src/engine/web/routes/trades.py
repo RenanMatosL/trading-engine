@@ -58,6 +58,36 @@ async def list_trades(request: Request, limit: int = 50):
 
     return [_to_schema(t) for t in trades]
 
+@router.get("/log")
+async def get_trades_log(request: Request):
+    """Retorna o log detalhado de trades (F13)."""
+    store = SqliteStateStore("engine.db")  # ou usar o app.state
+    try:
+        trades = store.list_trades(limit=100)
+    finally:
+        store.close()
+
+    # Converte para dict (TradeRecord é dataclass)
+    out = []
+    for t in trades:
+        out.append({
+            "region_bar_time": t.region_bar_time.isoformat(),
+            "is_buy": t.is_buy,
+            "entry_time": t.entry_time.isoformat(),
+            "entry_price": t.entry_price,
+            "exit_time": t.exit_time.isoformat(),
+            "exit_price": t.exit_price,
+            "stop_loss": t.stop_loss,
+            "take_profit": t.take_profit,
+            "sl_points": (t.entry_price - t.stop_loss) if t.is_buy else (t.stop_loss - t.entry_price),
+            "tp_points": (t.take_profit - t.entry_price) if t.is_buy else (t.entry_price - t.take_profit),
+            "initial_volume": t.initial_volume,
+            "pnl_points": t.pnl_points,
+            "pnl_money": t.pnl_money,
+            "exit_reason": t.exit_reason,
+        })
+    return out
+
 
 def _to_schema(trade: TradeRecord) -> TradeSchema:
     return TradeSchema(

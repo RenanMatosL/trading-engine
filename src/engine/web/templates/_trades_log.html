@@ -1,0 +1,49 @@
+<div class="card">
+  <h3>Log Detalhado de Trades</h3>
+  {% if trades %}
+    <table class="striped">
+      <thead>
+        <tr>
+          <th>Entrada</th>
+          <th>Saída</th>
+          <th>Lado</th>
+          <th>Entry</th>
+          <th>Exit</th>
+          <th>SL (pts)</th>
+          <th>TP (pts)</th>
+          <th>Resultado</th>
+          <th>Motivo</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in trades %}
+          <tr>
+            <td>{{ t.entry_time[:19] }}</td>
+            <td>{{ t.exit_time[:19] }}</td>
+            <td>
+              {% if t.is_buy %}
+                <span class="status-ok">BUY</span>
+              {% else %}
+                <span class="status-error">SELL</span>
+              {% endif %}
+            </td>
+            <td>{{ "%.2f" | format(t.entry_price) }}</td>
+            <td>{{ "%.2f" | format(t.exit_price) }}</td>
+            <td>{{ "%.2f" | format(t.sl_points) }}</td>
+            <td>{{ "%.2f" | format(t.tp_points) }}</td>
+            <td>
+              {% if t.pnl_points > 0 %}
+                <span class="status-ok">+{{ "%.2f" | format(t.pnl_points) }}</span>
+              {% else %}
+                <span class="status-error">{{ "%.2f" | format(t.pnl_points) }}</span>
+              {% endif %}
+            </td>
+            <td>{{ t.exit_reason }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>Nenhum trade registrado.</p>
+  {% endif %}
+</div>

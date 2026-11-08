@@ -674,7 +674,7 @@ class TradingSession:
         deal_price: float = 0.0,
         deal_volume: float = 0.0,
     ) -> None:
-        """Grava o trade fechado no `state_store` (F7b-1 + F12)."""
+        """Grava o trade fechado no `state_store` (F7b-1 + F12 + F13)."""
         if self._store is None:
             return
         if self._current_entry_price is None:
@@ -689,6 +689,11 @@ class TradingSession:
         entry_price = self._current_entry_price
         is_buy = self._current_is_buy
         region_bar_time = self._current_entry_region
+
+        # F13: pega o SL/TP originais da região
+        region = self._regions.get(region_bar_time)
+        original_sl = region.stop_loss if region else 0.0
+        original_tp = region.take_profit if region else 0.0
 
         # F7b-1: calcula PnL se deal_price/deal_volume vieram
         if deal_price > 0 and deal_volume > 0:
@@ -711,12 +716,12 @@ class TradingSession:
             id=None,
             region_bar_time=region_bar_time,
             is_buy=is_buy,
-            entry_time=now,
+            entry_time=now,  # Hora de abertura
             entry_price=entry_price,
-            exit_time=now,
+            exit_time=now,   # Hora de fechamento
             exit_price=exit_price,
-            stop_loss=0.0,
-            take_profit=0.0,
+            stop_loss=original_sl,      # F13: SL original
+            take_profit=original_tp,    # F13: TP original
             initial_volume=volume,
             pnl_points=pnl_points,
             pnl_money=pnl_money,

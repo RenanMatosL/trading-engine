@@ -80,7 +80,7 @@
 {% endif %}
 
 <!-- Formulário SEM HTMX: o JavaScript puro (backtest.html) intercepta o submit -->
-<form id="backtest-form">
+<form id="backtest-form" onsubmit="runBacktestWithChart(event); return false;">
 
   <div class="card">
     <h3>Upload de CSV</h3>

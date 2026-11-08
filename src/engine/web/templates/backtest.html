@@ -9,10 +9,47 @@
   <em>Faça upload de um CSV de candles M1 para rodar o backtester e visualizar os trades no gráfico.</em>
 </p>
 
-<div id="backtest-form-container">
-  <article class="card"><p>Carregando formulário...</p></article>
-</div>
+<!-- Container do resultado (substituído a cada novo backtest) -->
+<div id="result-summary-container"></div>
 
+<!-- Formulário embutido diretamente (sem fetch, sem HTMX) -->
+<form id="backtest-form" onsubmit="runBacktestWithChart(event); return false;">
+  <div class="card">
+    <h3>Upload de CSV</h3>
+    <div class="grid-3">
+      <label>
+        Arquivo CSV
+        <input type="file" name="file" accept=".csv" required>
+      </label>
+      <label>
+        Saldo inicial
+        <input type="number" name="initial_balance" value="100000" step="1000" min="1000">
+      </label>
+      <label>
+        Slippage (pts)
+        <input type="number" name="slippage" value="0" step="0.1" min="0">
+      </label>
+      <label>
+        Spread (pts)
+        <input type="number" name="spread" value="0" step="0.1" min="0">
+      </label>
+    </div>
+    <div class="grid-3">
+      <label>
+        Data inicial (opcional)
+        <input type="date" name="from_date">
+      </label>
+      <label>
+        Data final (opcional)
+        <input type="date" name="to_date">
+      </label>
+    </div>
+  </div>
+
+  <button type="submit">Rodar backtest</button>
+</form>
+
+<!-- Container do gráfico -->
 <div id="chart-section" style="display: none; margin-top: 2rem;">
   <div class="card">
     <h3>Gráfico de Candles</h3>
@@ -65,21 +102,6 @@ let measureStartPrice = null;
 let measureStartTime = null;
 let measureLine = null;
 let isMeasuring = false;
-let lastMouseX = 0;
-let lastMouseY = 0;
-
-// Carrega o formulário
-document.addEventListener('DOMContentLoaded', () => {
-    fetch('/api/backtest', { headers: { 'HX-Request': 'true' } })
-        .then(r => r.text())
-        .then(html => {
-            document.getElementById('backtest-form-container').innerHTML = html;
-        })
-        .catch(err => {
-            document.getElementById('backtest-form-container').innerHTML =
-                `<p class="status-error">Erro ao carregar formulário: ${err}</p>`;
-        });
-});
 
 async function runBacktestWithChart(event) {
     event.preventDefault();
@@ -87,39 +109,55 @@ async function runBacktestWithChart(event) {
     const formData = new FormData(form);
     const chartSection = document.getElementById('chart-section');
     const chartContainer = document.getElementById('chart-container');
+    const resultContainer = document.getElementById('result-summary-container');
 
+    // Mostra "carregando"
     chartSection.style.display = 'block';
     chartContainer.innerHTML = '<p>Rodando backtest e renderizando gráfico...</p>';
+    resultContainer.innerHTML = '<p>Carregando resultado...</p>';
 
     try {
         const response = await fetch('/api/backtest/chart', {
             method: 'POST',
             body: formData,
         });
+        
         if (!response.ok) {
             const err = await response.json();
             chartContainer.innerHTML = `<p class="status-error">Erro: ${err.error || 'Erro desconhecido'}</p>`;
+            resultContainer.innerHTML = '';
             return;
         }
+        
         const data = await response.json();
+        
+        // Atualiza os dados globais
         currentCandles = data.candles;
         currentVolumes = data.volumes || [];
         currentMarkers = data.markers || [];
+        
+        // Renderiza o gráfico
         renderChart();
+        
+        // Renderiza o card verde (substituindo o anterior)
         if (data.summary) {
-            renderSummary(data.summary, document.getElementById('backtest-form-container'));
+            renderSummary(data.summary);
         }
     } catch (error) {
         chartContainer.innerHTML = `<p class="status-error">Erro: ${error}</p>`;
+        resultContainer.innerHTML = '';
     }
 }
 
-function renderSummary(summary, container) {
+function renderSummary(summary) {
     const s = summary;
     const pnlClass = s.total_pnl > 0 ? 'status-ok' : (s.total_pnl < 0 ? 'status-error' : '');
     const retClass = s.return_pct > 0 ? 'status-ok' : (s.return_pct < 0 ? 'status-error' : '');
     const pnlSign = s.total_pnl > 0 ? '+' : '';
     const retSign = s.return_pct > 0 ? '+' : '';
+    
+    const resultContainer = document.getElementById('result-summary-container');
+    
     const html = `
       <div class="card" style="background: #1a3a2a; border-color: #2ecc71; margin-bottom: 1rem;">
         <h3>Resultado do Backtest</h3>
@@ -139,7 +177,9 @@ function renderSummary(summary, container) {
         </p>
       </div>
     `;
-    container.insertAdjacentHTML('afterbegin', html);
+    
+    // Substitui o conteúdo (não adiciona um novo)
+    resultContainer.innerHTML = html;
 }
 
 function renderChart() {
@@ -150,8 +190,7 @@ function renderChart() {
         layout: { background: { color: '#1a1a1a' }, textColor: '#d1d4dc' },
         grid: { vertLines: { color: '#2a2a2a' }, horzLines: { color: '#2a2a2a' } },
         timeScale: { timeVisible: true, secondsVisible: false },
-        crosshair: { mode: 0 },  // ← ADICIONE ESTA LINHA (modo normal, sem snap)
-
+        crosshair: { mode: 0 },
         width: container.clientWidth,
         height: container.clientHeight || 500,
     });
@@ -184,13 +223,9 @@ function renderChart() {
     setupMeasureTool(chart, candleSeries, container);
 }
 
-// ------------------------------------------------------------------
-// Measure tool (Shift + arrastar) usando crosshair nativo
-// ------------------------------------------------------------------
 function setupMeasureTool(chart, series, container) {
     const tooltip = document.getElementById('measure-tooltip');
 
-    // Limpa linha anterior
     if (measureLine) {
         chart.removeSeries(measureLine);
         measureLine = null;
@@ -200,7 +235,6 @@ function setupMeasureTool(chart, series, container) {
     measureStartTime = null;
     isMeasuring = false;
 
-    // Cria a linha de medição
     measureLine = chart.addLineSeries({
         color: '#00bfff',
         lineWidth: 1,
@@ -210,7 +244,6 @@ function setupMeasureTool(chart, series, container) {
         crosshairMarkerVisible: false,
     });
 
-    // Handler: mousedown no container (captura Shift + botão esquerdo)
     const onMouseDown = (e) => {
         if (!e.shiftKey || e.button !== 0) return;
         e.preventDefault();
@@ -219,13 +252,10 @@ function setupMeasureTool(chart, series, container) {
         const rect = container.getBoundingClientRect();
         const y = e.clientY - rect.top;
         const x = e.clientX - rect.left;
-
-        // Pega o preço exato na coordenada Y (sem snap)
         measureStartPrice = series.coordinateToPrice(y);
         measureStartTime = chart.timeScale().coordinateToTime(x);
     };
 
-    // Handler: mousemove no container
     const onMouseMove = (e) => {
         if (!isMeasuring) return;
 
@@ -237,13 +267,11 @@ function setupMeasureTool(chart, series, container) {
 
         if (currentPrice === null || currentTime === null) return;
 
-        // Atualiza a linha
         measureLine.setData([
             { time: measureStartTime, value: measureStartPrice },
             { time: currentTime, value: currentPrice },
         ]);
 
-        // Calcula a distância
         const diff = currentPrice - measureStartPrice;
         const sign = diff >= 0 ? '+' : '';
         tooltip.style.display = 'block';
@@ -252,13 +280,11 @@ function setupMeasureTool(chart, series, container) {
         tooltip.textContent = `${sign}${diff.toFixed(2)} pts (|${Math.abs(diff).toFixed(2)}|)`;
     };
 
-    // Handler: mouseup
     const onMouseUp = (e) => {
         if (!isMeasuring) return;
         isMeasuring = false;
     };
 
-    // Handler: duplo clique para limpar
     const onDblClick = () => {
         measureLine.setData([]);
         tooltip.style.display = 'none';
@@ -315,13 +341,5 @@ function aggregateVolumes(volumes, periodSeconds) {
     if (bucket) result.push(bucket);
     return result;
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-    document.body.addEventListener('submit', (e) => {
-        if (e.target && e.target.id === 'backtest-form') {
-            runBacktestWithChart(e);
-        }
-    }, true);
-});
 </script>
 {% endblock %}
