@@ -85,7 +85,7 @@ def _preset_to_pricing(preset: StdDevV510Preset) -> PricingConfig:
         big_candle_entry_offset_points=det.big_candle_entry_offset,
         big_candle_sl_adjust_points=det.big_candle_sl_adjust,
         # F9: modo armadilha
-        trigger_mode=TrapMode.TRAP if preset.trigger_mode == TriggerMode.TRAP else TrapMode.NORMAL,
+        trigger_mode=TrapMode.TRAP if preset.trigger_mode == "trap" else TrapMode.NORMAL,
         trap_arm_points=preset.trap_arm_points,
         trap_sl_points=preset.trap_sl_points,
         point=1.0,
@@ -382,14 +382,6 @@ class TradingSession:
     def _maybe_reentry(self, snapshot: MarketSnapshot) -> ReentryIntent | None:
         """Detecta se é hora de armar o reforço e, se o preço voltou,
         emite a `ReentryIntent` (o caller materializa a ordem).
-
-        Regras (espelham o EA v4.60):
-          1. Só se `use_reentry=True` e `_current_entry_price` existe.
-          2. Só se `_reentry_done=False` (1 reforço por trade).
-          3. **Armar:** preço avança `arm_points` a favor → `_reentry_armed=True`.
-          4. **Emitir:** `_reentry_armed=True` e preço voltou ao `entry_price` →
-             `_reentry_done=True`, retorna `ReentryIntent`.
-          5. Se `_reentry_done=True`, não faz mais nada.
         """
         risk = self._preset.risk
         if not risk.use_reentry:
@@ -489,7 +481,6 @@ class TradingSession:
     # ----------------------------------------------------------------
     def on_trade_event(self, event: TradeEvent, now: datetime) -> None:
         if isinstance(event, ReentryFilled):
-            # F5c: reforço preenchido. `_reentry_done` já foi marcado.
             log.info(
                 "trade_event_reentry_filled",
                 position=event.position_ticket,
@@ -500,7 +491,6 @@ class TradingSession:
             return
 
         if isinstance(event, ReentryExitFilled):
-            # F5c: TP ou SL do reforço executou. Não muda a posição original.
             log.info(
                 "trade_event_reentry_exit",
                 position=event.position_ticket,
@@ -659,11 +649,7 @@ class TradingSession:
         deal_price: float = 0.0,
         deal_volume: float = 0.0,
     ) -> None:
-        """Grava o trade fechado no `state_store` (F7b-1).
-
-        `deal_price` e `deal_volume` vêm do `DealInfo` (F7b-1).
-        Se forem 0 (testes antigos), usa entry_price (PnL = 0).
-        """
+        """Grava o trade fechado no `state_store` (F7b-1)."""
         if self._store is None:
             return
         if self._current_entry_price is None:
@@ -771,23 +757,38 @@ class TradingSession:
         is_buy = region.is_buy
         cfg = self._pricing
 
-        # F9: modo armadilha inverte a direção
+        # F9: modo armadilha
         if cfg.trigger_mode == TrapMode.TRAP:
+            # Inverte a direção
             is_buy = not is_buy
-
-        if cfg.entry_mode == PricingEntryMode.IMMEDIATE:
-            entry_price = snapshot.ask if is_buy else snapshot.bid
-            reason = "immediate"
-        else:
+            # Nível de entrada: extremo + trap_arm_points
             level = entry_level(loc, is_buy, cfg)
-            if is_buy:
-                if snapshot.ask > level:
-                    return None
-            else:
-                if snapshot.bid < level:
-                    return None
             entry_price = level
-            reason = "pullback"
+            reason = "trap"
+            # SEMPRE arma a ordem pendente
+            as_pending = True
+            # Recalcula SL e TP com a direção invertida
+            sl = stop_level(loc, is_buy, cfg)
+            tp = take_profit_level(loc, is_buy, cfg)
+        else:
+            # Lógica normal (sem trap)
+            if cfg.entry_mode == PricingEntryMode.IMMEDIATE:
+                entry_price = snapshot.ask if is_buy else snapshot.bid
+                reason = "immediate"
+            else:
+                level = entry_level(loc, is_buy, cfg)
+                if is_buy:
+                    if snapshot.ask > level:
+                        return None
+                else:
+                    if snapshot.bid < level:
+                        return None
+                entry_price = level
+                reason = "pullback"
+            as_pending = self._preset.entry.as_pending
+            # Usa o SL e TP calculados pelo RegionManager
+            sl = region.stop_loss
+            tp = region.take_profit
 
         risk = self._preset.risk
         partials = make_partial_specs(
@@ -802,10 +803,10 @@ class TradingSession:
             region=region,
             is_buy=is_buy,
             entry_price=entry_price,
-            stop_loss=region.stop_loss,
-            take_profit=region.take_profit,
+            stop_loss=sl,
+            take_profit=tp,
             volume=0.0,
-            as_pending=self._preset.entry.as_pending,
+            as_pending=as_pending,
             reason=reason,
             created_at=snapshot.now,
             partials=partials,

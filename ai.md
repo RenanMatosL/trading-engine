@@ -1,3 +1,8 @@
+---
+
+### 📄 2. `AI.md`
+
+```markdown
 # AI.md — Guia Único de Retomada do Projeto Trading Engine
 
 > **Propósito deste arquivo:** permitir que uma IA (ou o autor) retome o projeto
@@ -37,6 +42,7 @@ uma interface web visual e leve.
 10. **Multi-estratégia** (N sessões por tick, cada uma com seu magic).
 11. **Backtester próprio** (sem MT5, com slippage/spread e métricas).
 12. **Interface Web (F7)** (FastAPI + HTMX + Pico CSS) para monitoramento, backtests, configuração e atualização em tempo real (SSE).
+13. **Modo Armadilha (F9)** (inverte a direção do rompimento).
 
 ---
 
@@ -71,9 +77,10 @@ uma interface web visual e leve.
 | **F7f** | Frontend: SSE (status em tempo real) | ✅ fechado |
 | **F7g** | Frontend: Testes de cobertura (24 testes web) | ✅ fechado |
 | **F8** | Simulador: Parciais e reforço no `SimulatedExecutor` | ✅ fechado |
+| **F9** | Modo Armadilha (Trap): inverte a direção do rompimento | ✅ fechado |
 
 **Suíte de testes atual:** **241 passed** (`uv run pytest -q`).
-**Projeto completo (F0→F6 + F7a→F7g + F8).**
+**Projeto completo (F0→F6 + F7a→F7g + F8 + F9).**
 
 ---
 
@@ -90,22 +97,23 @@ src/engine/
 │ ├── location.py # TradeLocation, RegionState, RegionPhase, RegisterResult
 │ ├── regions.py # RegionManager (governança, TTL, validade, rearme)
 │ ├── pricing.py # entry_level / stop_level / take_profit_level
-│ │ # + PricingConfig + Enums de modo
+│ │ # + PricingConfig + Enums de modo + TrapMode (F9)
 │ └── strategy.py # StrategyConfig (F5f)
 │
 ├── config/
 │ ├── settings.py # EngineSettings (pydantic-settings, .env)
-│ └── presets.py # StdDevV510Preset (7 seções + validadores cruzados)
+│ └── presets.py # StdDevV510Preset (7 seções + validadores cruzados + F9)
 │
 ├── application/ # orquestração (sem MT5, sem ordens)
 │ ├── status.py # get_status (F0/F1)
 │ ├── intent.py # TradeIntent, ReentryIntent, TickDecision, BarResult
 │ ├── trading_session.py # TradingSession (+ state_store + on_trade_event +
-│ │ # calendar + persistência + save_trade)
+│ │ # calendar + persistência + save_trade + F9)
 │ ├── events.py # EventFeed, BarEvent, TickEvent (F2d)
 │ ├── simulation.py # run_simulation, SimulatedExecutor
 │ │ # + slippage/spread (F5e)
 │ │ # + parciais/reforço (F8)
+│ │ # + trap (F9)
 │ ├── trade_events.py # EntryFilled, PartialFilled, ReentryFilled,
 │ │ # ReentryExitFilled, StopLossHit,
 │ │ # TakeProfitHit, PositionClosed (F3b + F5c)
@@ -228,6 +236,7 @@ text
 - **F5e:** `__init__` aceita `calendar: B3Calendar | None = None`. `SessionSnapshot` agora inclui 5 campos extras.
 - **F5f:** o `cmd_run` cria **N** `TradingSession` (uma por estratégia).
 - **F7b-1:** `_save_closed_trade` persiste o trade fechado no SQLite (via `state_store`).
+- **F9:** no modo trap (`trigger_mode == "trap"`), a direção é invertida e o SL/TP são recalculados com a direção invertida.
 
 ### `TradeIntent`
 - `volume` = 0.0 até o `Executor` preencher.
@@ -338,9 +347,10 @@ text
   - `total_contracts` é **ignorado** em by-risk.
   - `risk_value=0` ou `sl_dist=0` → `lots_min` (fallback).
 
-### Simulador (F2d + F5e + F8)
+### Simulador (F2d + F5e + F8 + F9)
 - SL **ganha empate** dentro do mesmo tick (conservador, MT5-style).
 - **F8:** Parciais e reforço implementados no `SimulatedExecutor`.
+- **F9:** Modo trap implementado com `sim_pending_armed` e `is_trap`.
 - Volume = fixed_contracts (by-risk só em `RealExecutor`).
 - **F5e:** `SimulatedExecutor.__init__(preset, slippage_points=0.0, spread_points=0.0)`. Slippage aplicado no fill (pior caso).
 - **F8:** `SimulatedExecutor._open` rastreia `partials_done`, `reentry_armed`, `reentry_done`. `on_tick` verifica os alvos dos tiers e o retorno ao entry.
@@ -361,19 +371,9 @@ text
 
 ---
 
-## 5. Próximos passos (F9+)
+## 5. Próximos passos (F10+)
 
-O projeto **F0→F6 + F7a→F7g + F8 está 100% completo**.
-
-### F9 — Estratégias adicionais
-
-**O que implementa:** mais estratégias além de `stddev_v510`.
-
-**Arquivos:**
-- `presets/outra_estrategia.yaml` — novo preset.
-- `src/engine/config/presets.py` — talvez outro `Preset` (não só `StdDevV510Preset`).
-- `src/engine/cli.py` — `engine run --strategies=stddev_v510,outra`.
-- `tests/test_*.py` — testes da nova estratégia.
+O projeto **F0→F6 + F7a→F7g + F8 + F9 está 100% completo**.
 
 ### F10 — Multi-símbolo
 
@@ -424,7 +424,7 @@ uv run engine backtest --csv PATH --output result.json        # backtest com JSO
 
 # Git
 git add -A
-git commit -m "feat(F8): parciais/reforço no simulador (241 passed)"
+git commit -m "feat(F9): modo armadilha (241 passed)"
 7. Como o próximo agente deve começar
 Passo 1 — Confirmar estado atual:
 
@@ -433,7 +433,7 @@ uv run pytest -q
 Deve mostrar 241 passed. Se não, PARE e investigue o que quebrou.
 
 Passo 2 — Ler este AI.md inteiro. Principalmente seções 4 (decisões) e
-5 (próximos passos F9+).
+5 (próximos passos F10+).
 
 Passo 3 — Rodar uv run engine check-config para confirmar que o preset
 carrega (7 seções no log).
@@ -542,6 +542,15 @@ SSE (F7f): StreamingResponse(media_type="text/event-stream") é obrigatório. Se
 
 TestClient: with TestClient(app) as client: dispara o lifespan.
 
+F9 (Modo Armadilha) — Pontos de atenção
+trigger_mode é uma string ("trap" ou "normal"). A comparação deve ser feita com preset.trigger_mode == "trap" (não com o Enum).
+
+_make_intent inverte is_buy e recalcula SL/TP com a direção invertida (usando stop_level e take_profit_level).
+
+SimulatedExecutor.on_tick trata o reason == "trap" como ordem stop (preço precisa subir para vender, descer para comprar).
+
+trap_arm_points muito grande (ex: 200) pode fazer o trade nunca abrir. Use valores menores (20-50) para calibrar.
+
 9. Referências externas
 EA de referência: StdDevVolumeBreakout.mq5 v4.60 (Renan) — não está
 no repositório, mas é a fonte de verdade. Se precisar comparar, pedir ao autor.
@@ -633,5 +642,7 @@ Código de teste NUNCA no app.py. Sempre em tests/test_web.py.
 SSE: o servidor segura a conexão. Se for parar o uvicorn, feche a aba
 do navegador antes do Ctrl+C. O formato do frame é data: <linha>\n\n.
 
-F0→F6 + F7a→F7g + F8 está 100% completo. Próximas fases: F9
-(estratégias adicionais), F10 (multi-símbolo), F11 (observabilidade).
+Modo trap: trigger_mode é string ("trap" ou "normal"). No modo trap, _make_intent inverte is_buy e recalcula SL/TP com stop_level e take_profit_level. O SimulatedExecutor.on_tick trata reason == "trap" como ordem stop.
+
+F0→F6 + F7a→F7g + F8 + F9 está 100% completo. Próximas fases: F10
+(multi-símbolo), F11 (observabilidade).

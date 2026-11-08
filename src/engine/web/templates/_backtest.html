@@ -1,8 +1,8 @@
 {#
-  Partial de backtest (F7d).
+  Partial de backtest (F7d + F10).
   Renderizado por:
-    - GET /backtest  (inicial, via HTMX)
-    - POST /api/backtest  (após rodar, com resultado ou erro)
+    - GET  /api/backtest  (form inicial)
+    - POST /api/backtest  (resultado numérico via HTMX)
   Recebe:
     - result: dict | None (summary do backtest)
     - error: str | None
@@ -15,7 +15,7 @@
 {% endif %}
 
 {% if result %}
-  <div class="card" style="background: #1a3a2a; border-color: #2ecc71;">
+  <div class="card" style="background: #1a3a2a; border-color: #2ecc71; margin-bottom: 1rem;">
     <h3>Resultado do Backtest</h3>
     <div class="grid-3">
       <div class="metric">
@@ -79,11 +79,8 @@
   </div>
 {% endif %}
 
-<form hx-post="/api/backtest"
-      hx-target="#backtest-form"
-      hx-swap="outerHTML"
-      hx-encoding="multipart/form-data"
-      id="backtest-form">
+<!-- Formulário SEM HTMX: o JavaScript puro (backtest.html) intercepta o submit -->
+<form id="backtest-form">
 
   <div class="card">
     <h3>Upload de CSV</h3>

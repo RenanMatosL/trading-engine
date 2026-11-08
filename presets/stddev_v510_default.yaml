@@ -1,7 +1,7 @@
 name: test
 strategy: stddev_v510
 detector:
-  length: 150
+  length: 180
   std_ref: 4.0
   volume_source: tick
   timeframe: M1
@@ -13,33 +13,33 @@ detector:
 session:
   window:
     start: 09:00:00
-    end: '17:30:00'
+    end: '18:30:00'
   close_outside: true
-  carry_entry_delay_min: 15
+  carry_entry_delay_min: 0
   breakout_ttl_min: 60
-  cooldown_after_sl_min: 10
-  max_trades_day: 3
+  cooldown_after_sl_min: 0
+  max_trades_day: 8
   use_entry_block: false
   entry_block:
     start: '10:00:00'
     end: '11:00:00'
 entry:
-  level_mode: default
+  level_mode: broken_extreme
   level_offset_points: 0.0
   as_pending: true
-  max_entry_gap_points: 100
+  max_entry_gap_points: 50
 stop:
   level_mode: default
   sl_points: 200.0
   level_offset_points: 0.0
 take_profit:
   use_final_tp: true
-  final_tp_points: 600.0
+  final_tp_points: 1200.0
 risk:
   sizing_mode: fixed_contracts
-  total_contracts: 6
+  total_contracts: 10
   lot_per_contract: 1.0
-  risk_mode: percent_balance
+  risk_mode: fixed_money
   risk_value: 1.0
   use_partial_exit: false
   exit_type: points
@@ -63,9 +63,9 @@ risk:
   reuse_sl_signal: false
 regions:
   max_loc: 12
-  valid_days: 2
-  candidate_mode: highest_volume
-trigger_mode: normal
-trap_arm_points: 200.0
+  valid_days: 3
+  candidate_mode: first_ready
+trigger_mode: trap
+trap_arm_points: 20.0
 trap_style: immediate
 trap_sl_points: 200.0

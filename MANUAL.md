@@ -206,6 +206,8 @@ Risco: sizing_mode, total_contracts, lot_per_contract, risk_mode, risk_value, us
 
 Regiões: max_loc, valid_days, candidate_mode.
 
+Modo do Gatilho: trigger_mode, trap_arm_points, trap_style, trap_sl_points.
+
 Ações:
 
 Salvar preset: valida com pydantic, faz backup .bak, salva YAML.
@@ -219,7 +221,7 @@ O que faz: roda o motor sobre um CSV de candles (sem MT5). Agora com parciais e 
 
 Passo a passo:
 
-Clique em "Escolher arquivo" e selecione um CSV (ex: tests/fixtures/WINZ26_M1_202611040903_202611051800.csv).
+Clique em "Escolher arquivo" e selecione um CSV (ex: tests/fixtures/sample_bars.csv).
 
 Ajuste o saldo inicial (default: 100.000).
 
@@ -464,6 +466,8 @@ broken_extreme	Entrada no extremo rompido (pullback raso).
 mid	Entrada no meio da região.
 opposite_extreme	Entrada no extremo oposto (pullback profundo).
 immediate	Entrada a mercado no instante do rompimento.
+Nota: Com o modo broken_extreme, o backtest tem gerado resultados muito melhores (ex: +122% de retorno em 9 meses, com 198 trades). O modo trap também está funcional.
+
 11. Fase 6 — Operação real (conta real)
 ⚠️ Só faça isso depois de validar em demo por 1-2 semanas.
 
@@ -700,6 +704,11 @@ Causa: O YAML salvo pelo /config pode estar em cache ou o backtest.py está lend
 
 Fix: Edite o YAML manualmente (em presets/stddev_v510_default.yaml) e rode o backtest. Confirme o conteúdo com type presets\stddev_v510_default.yaml | findstr "level_mode sl_points".
 
+14.14 — Backtest "trava" com arquivos muito grandes (> 100k candles)
+Causa: O backtester roda no mesmo processo do FastAPI. Arquivos muito grandes (ex: 1M candles) bloqueiam a interface.
+
+Fix: Para arquivos grandes, rode o backtest via CLI (terminal), que é mais rápido e não bloqueia a interface.
+
 15. Glossário
 Termo	Significado
 Região	Área de trade-location criada por um candle-sinal (máx, mín, meio)
@@ -718,6 +727,9 @@ HTMX	Biblioteca JS (14 KB) que faz AJAX sem escrever JS
 Pico.css	CSS semântico (dark mode nativo)
 uPlot	Biblioteca de gráficos (50 KB)
 Frontend	Dashboard web (FastAPI + HTMX + Pico + uPlot + SSE)
+Modo Armadilha	Modo onde a operação é invertida (rompeu p/ cima = venda)
+Trap Arm Points	Distância em pontos além do extremo para armar a armadilha
+Trap SL Points	Stop Loss do modo armadilha, a partir da entrada
 📞 Suporte
 Dúvidas sobre o código: leia o AI.md (fonte única de verdade do projeto).
 

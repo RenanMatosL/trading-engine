@@ -3,10 +3,325 @@
 {% block title %}Backtest — Trading Engine{% endblock %}
 
 {% block content %}
-  <h2>Backtest</h2>
-  <p>Faça upload de um CSV de candles M1 para rodar o backtester.</p>
+<h2>Backtest</h2>
 
-  <div id="backtest-form">
-    {% include "_backtest.html" %}
+<p>
+  <em>Faça upload de um CSV de candles M1 para rodar o backtester e visualizar os trades no gráfico.</em>
+</p>
+
+<div id="backtest-form-container">
+  <article class="card"><p>Carregando formulário...</p></article>
+</div>
+
+<div id="chart-section" style="display: none; margin-top: 2rem;">
+  <div class="card">
+    <h3>Gráfico de Candles</h3>
+    <div style="margin-bottom: 1rem;">
+      <label>
+        Timeframe (visualização):
+        <select id="timeframe-select" onchange="onTimeframeChange()">
+          <option value="1">1M</option>
+          <option value="5">5M</option>
+          <option value="15">15M</option>
+          <option value="30">30M</option>
+          <option value="240">4H</option>
+          <option value="1440">D</option>
+          <option value="43200">M</option>
+        </select>
+      </label>
+      <span style="margin-left: 1rem; font-size: 0.85rem; color: var(--pico-muted-color);">
+        💡 Segure <kbd>Shift</kbd> e arraste para medir a distância em pontos. Duplo clique limpa.
+      </span>
+    </div>
+    <div id="chart-wrapper" style="position: relative; height: 500px; width: 100%;">
+      <div id="chart-container" style="height: 100%; width: 100%;"></div>
+      <div id="measure-tooltip" style="
+        position: absolute;
+        display: none;
+        background: #2a2a2a;
+        border: 1px solid #00bfff;
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-size: 0.85rem;
+        color: #00bfff;
+        pointer-events: none;
+        z-index: 10;
+        white-space: nowrap;
+      "></div>
+    </div>
   </div>
+</div>
+
+<script>
+let currentChart = null;
+let currentCandles = [];
+let currentVolumes = [];
+let currentMarkers = [];
+let currentCandleSeries = null;
+let currentVolumeSeries = null;
+
+// Estado da medição
+let measureStartPrice = null;
+let measureStartTime = null;
+let measureLine = null;
+let isMeasuring = false;
+let lastMouseX = 0;
+let lastMouseY = 0;
+
+// Carrega o formulário
+document.addEventListener('DOMContentLoaded', () => {
+    fetch('/api/backtest', { headers: { 'HX-Request': 'true' } })
+        .then(r => r.text())
+        .then(html => {
+            document.getElementById('backtest-form-container').innerHTML = html;
+        })
+        .catch(err => {
+            document.getElementById('backtest-form-container').innerHTML =
+                `<p class="status-error">Erro ao carregar formulário: ${err}</p>`;
+        });
+});
+
+async function runBacktestWithChart(event) {
+    event.preventDefault();
+    const form = event.target;
+    const formData = new FormData(form);
+    const chartSection = document.getElementById('chart-section');
+    const chartContainer = document.getElementById('chart-container');
+
+    chartSection.style.display = 'block';
+    chartContainer.innerHTML = '<p>Rodando backtest e renderizando gráfico...</p>';
+
+    try {
+        const response = await fetch('/api/backtest/chart', {
+            method: 'POST',
+            body: formData,
+        });
+        if (!response.ok) {
+            const err = await response.json();
+            chartContainer.innerHTML = `<p class="status-error">Erro: ${err.error || 'Erro desconhecido'}</p>`;
+            return;
+        }
+        const data = await response.json();
+        currentCandles = data.candles;
+        currentVolumes = data.volumes || [];
+        currentMarkers = data.markers || [];
+        renderChart();
+        if (data.summary) {
+            renderSummary(data.summary, document.getElementById('backtest-form-container'));
+        }
+    } catch (error) {
+        chartContainer.innerHTML = `<p class="status-error">Erro: ${error}</p>`;
+    }
+}
+
+function renderSummary(summary, container) {
+    const s = summary;
+    const pnlClass = s.total_pnl > 0 ? 'status-ok' : (s.total_pnl < 0 ? 'status-error' : '');
+    const retClass = s.return_pct > 0 ? 'status-ok' : (s.return_pct < 0 ? 'status-error' : '');
+    const pnlSign = s.total_pnl > 0 ? '+' : '';
+    const retSign = s.return_pct > 0 ? '+' : '';
+    const html = `
+      <div class="card" style="background: #1a3a2a; border-color: #2ecc71; margin-bottom: 1rem;">
+        <h3>Resultado do Backtest</h3>
+        <div class="grid-3">
+          <div class="metric"><span class="metric-label">Candles</span><span class="metric-value">${s.n_bars}</span></div>
+          <div class="metric"><span class="metric-label">Trades</span><span class="metric-value">${s.n_trades}</span></div>
+          <div class="metric"><span class="metric-label">Win Rate</span><span class="metric-value">${(s.win_rate * 100).toFixed(2)}%</span></div>
+          <div class="metric"><span class="metric-label">PnL Total</span><span class="metric-value ${pnlClass}">${pnlSign}${s.total_pnl.toFixed(2)}</span></div>
+          <div class="metric"><span class="metric-label">Return</span><span class="metric-value ${retClass}">${retSign}${s.return_pct.toFixed(2)}%</span></div>
+          <div class="metric"><span class="metric-label">Sharpe</span><span class="metric-value">${s.sharpe.toFixed(2)}</span></div>
+          <div class="metric"><span class="metric-label">Max Drawdown</span><span class="metric-value">${s.max_drawdown_pct.toFixed(2)}%</span></div>
+          <div class="metric"><span class="metric-label">Profit Factor</span><span class="metric-value">${s.profit_factor}</span></div>
+          <div class="metric"><span class="metric-label">Avg Win / Loss</span><span class="metric-value">${s.avg_win.toFixed(2)} / ${s.avg_loss.toFixed(2)}</span></div>
+        </div>
+        <p style="font-size: 0.8rem; color: var(--pico-muted-color);">
+          Período: ${s.start ? s.start.slice(0, 10) : ''} a ${s.end ? s.end.slice(0, 10) : ''}
+        </p>
+      </div>
+    `;
+    container.insertAdjacentHTML('afterbegin', html);
+}
+
+function renderChart() {
+    const container = document.getElementById('chart-container');
+    container.innerHTML = '';
+
+    const chart = LightweightCharts.createChart(container, {
+        layout: { background: { color: '#1a1a1a' }, textColor: '#d1d4dc' },
+        grid: { vertLines: { color: '#2a2a2a' }, horzLines: { color: '#2a2a2a' } },
+        timeScale: { timeVisible: true, secondsVisible: false },
+        crosshair: { mode: 0 },  // ← ADICIONE ESTA LINHA (modo normal, sem snap)
+
+        width: container.clientWidth,
+        height: container.clientHeight || 500,
+    });
+
+    const candleSeries = chart.addCandlestickSeries({
+        upColor: '#26a69a', downColor: '#ef5350',
+        borderVisible: false,
+        wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    });
+    candleSeries.setData(currentCandles);
+
+    const volumeSeries = chart.addHistogramSeries({
+        color: '#26a69a',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+    });
+    volumeSeries.priceScale().applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+    });
+    if (currentVolumes.length > 0) volumeSeries.setData(currentVolumes);
+
+    if (currentMarkers.length > 0) candleSeries.setMarkers(currentMarkers);
+
+    chart.timeScale().fitContent();
+
+    currentChart = chart;
+    currentCandleSeries = candleSeries;
+    currentVolumeSeries = volumeSeries;
+
+    setupMeasureTool(chart, candleSeries, container);
+}
+
+// ------------------------------------------------------------------
+// Measure tool (Shift + arrastar) usando crosshair nativo
+// ------------------------------------------------------------------
+function setupMeasureTool(chart, series, container) {
+    const tooltip = document.getElementById('measure-tooltip');
+
+    // Limpa linha anterior
+    if (measureLine) {
+        chart.removeSeries(measureLine);
+        measureLine = null;
+    }
+    tooltip.style.display = 'none';
+    measureStartPrice = null;
+    measureStartTime = null;
+    isMeasuring = false;
+
+    // Cria a linha de medição
+    measureLine = chart.addLineSeries({
+        color: '#00bfff',
+        lineWidth: 1,
+        lineStyle: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+    });
+
+    // Handler: mousedown no container (captura Shift + botão esquerdo)
+    const onMouseDown = (e) => {
+        if (!e.shiftKey || e.button !== 0) return;
+        e.preventDefault();
+        isMeasuring = true;
+
+        const rect = container.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        const x = e.clientX - rect.left;
+
+        // Pega o preço exato na coordenada Y (sem snap)
+        measureStartPrice = series.coordinateToPrice(y);
+        measureStartTime = chart.timeScale().coordinateToTime(x);
+    };
+
+    // Handler: mousemove no container
+    const onMouseMove = (e) => {
+        if (!isMeasuring) return;
+
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const currentPrice = series.coordinateToPrice(y);
+        const currentTime = chart.timeScale().coordinateToTime(x);
+
+        if (currentPrice === null || currentTime === null) return;
+
+        // Atualiza a linha
+        measureLine.setData([
+            { time: measureStartTime, value: measureStartPrice },
+            { time: currentTime, value: currentPrice },
+        ]);
+
+        // Calcula a distância
+        const diff = currentPrice - measureStartPrice;
+        const sign = diff >= 0 ? '+' : '';
+        tooltip.style.display = 'block';
+        tooltip.style.left = (e.clientX + 15) + 'px';
+        tooltip.style.top = (e.clientY - 30) + 'px';
+        tooltip.textContent = `${sign}${diff.toFixed(2)} pts (|${Math.abs(diff).toFixed(2)}|)`;
+    };
+
+    // Handler: mouseup
+    const onMouseUp = (e) => {
+        if (!isMeasuring) return;
+        isMeasuring = false;
+    };
+
+    // Handler: duplo clique para limpar
+    const onDblClick = () => {
+        measureLine.setData([]);
+        tooltip.style.display = 'none';
+        measureStartPrice = null;
+        measureStartTime = null;
+    };
+
+    container.addEventListener('mousedown', onMouseDown, true);
+    container.addEventListener('mousemove', onMouseMove, true);
+    container.addEventListener('mouseup', onMouseUp, true);
+    container.addEventListener('dblclick', onDblClick);
+}
+
+function onTimeframeChange() {
+    if (!currentCandles || currentCandles.length === 0) return;
+    const minutes = parseInt(document.getElementById('timeframe-select').value, 10);
+    const candles = aggregateCandles(currentCandles, minutes * 60);
+    const volumes = aggregateVolumes(currentVolumes, minutes * 60);
+    if (currentCandleSeries) currentCandleSeries.setData(candles);
+    if (currentVolumeSeries) currentVolumeSeries.setData(volumes);
+    if (currentChart) currentChart.timeScale().fitContent();
+}
+
+function aggregateCandles(candles, periodSeconds) {
+    const result = [];
+    let bucket = null;
+    for (const c of candles) {
+        const key = Math.floor(c.time / periodSeconds) * periodSeconds;
+        if (!bucket || bucket.time !== key) {
+            if (bucket) result.push(bucket);
+            bucket = { time: key, open: c.open, high: c.high, low: c.low, close: c.close };
+        } else {
+            bucket.high = Math.max(bucket.high, c.high);
+            bucket.low = Math.min(bucket.low, c.low);
+            bucket.close = c.close;
+        }
+    }
+    if (bucket) result.push(bucket);
+    return result;
+}
+
+function aggregateVolumes(volumes, periodSeconds) {
+    const result = [];
+    let bucket = null;
+    for (const v of volumes) {
+        const key = Math.floor(v.time / periodSeconds) * periodSeconds;
+        if (!bucket || bucket.time !== key) {
+            if (bucket) result.push(bucket);
+            bucket = { time: key, value: v.value, color: v.color };
+        } else {
+            bucket.value += v.value;
+        }
+    }
+    if (bucket) result.push(bucket);
+    return result;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.body.addEventListener('submit', (e) => {
+        if (e.target && e.target.id === 'backtest-form') {
+            runBacktestWithChart(e);
+        }
+    }, true);
+});
+</script>
 {% endblock %}

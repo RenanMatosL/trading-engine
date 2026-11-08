@@ -111,14 +111,17 @@
     <div class="grid-3">
       <label title="Modo de entrada: no meio da região ou em um offset específico (InpEntryMode).">
         Modo
-        <select name="entry.mode">
-          <option value="mid" {% if preset and preset.entry.mode == 'mid' %}selected{% endif %}>Meio</option>
-          <option value="offset" {% if preset and preset.entry.mode == 'offset' %}selected{% endif %}>Offset</option>
+        <select name="entry.level_mode">
+          <option value="default" {% if preset and preset.entry.level_mode == 'default' %}selected{% endif %}>Padrão (Meio)</option>
+          <option value="broken_extreme" {% if preset and preset.entry.level_mode == 'broken_extreme' %}selected{% endif %}>Extremo Rompido</option>
+          <option value="mid" {% if preset and preset.entry.level_mode == 'mid' %}selected{% endif %}>Meio</option>
+          <option value="opposite_extreme" {% if preset and preset.entry.level_mode == 'opposite_extreme' %}selected{% endif %}>Extremo Oposto</option>
+          <option value="immediate" {% if preset and preset.entry.level_mode == 'immediate' %}selected{% endif %}>Imediata</option>
         </select>
       </label>
       <label title="Offset em pontos a partir da borda da região (InpEntryOffsetPoints).">
         Offset (pontos)
-        <input type="number" name="entry.offset_points" value="{{ preset.entry.offset_points if preset else 0 }}" required>
+        <input type="number" name="entry.level_offset_points" value="{{ preset.entry.level_offset_points if preset else 0 }}" required>
       </label>
       <label title="Se verdadeiro, usa ordens limite (BuyLimit/SellLimit). Se falso, usa ordens a mercado.">
         As Pending
@@ -130,20 +133,54 @@
     </div>
   </div>
 
+  <!-- Modo do Gatilho (F9) -->
+  <div class="card">
+    <h3>Modo do Gatilho (Armadilha)</h3>
+    <div class="grid-3">
+      <label title="Normal: rompeu cima = COMPRA | Invertido: rompeu cima = VENDA (armadilha).">
+        Modo
+        <select name="trigger_mode">
+          <option value="normal" {% if preset and preset.trigger_mode == 'normal' %}selected{% endif %}>Normal</option>
+          <option value="trap" {% if preset and preset.trigger_mode == 'trap' %}selected{% endif %}>Invertido (Armadilha)</option>
+        </select>
+      </label>
+      <label title="[Invertido] Pontos além do extremo para armar a entrada. Ex: 200">
+        Trap Arm Points
+        <input type="number" step="0.1" name="trap_arm_points" value="{{ preset.trap_arm_points if preset else 200 }}" required>
+      </label>
+      <label title="[Invertido] SL em pontos além da entrada. Ex: 200">
+        Trap SL Points
+        <input type="number" step="0.1" name="trap_sl_points" value="{{ preset.trap_sl_points if preset else 200 }}" required>
+      </label>
+      <label title="[Invertido] Imediata: ao atingir X | Pullback: no retorno ao nível X">
+        Trap Style
+        <select name="trap_style">
+          <option value="immediate" {% if preset and preset.trap_style == 'immediate' %}selected{% endif %}>Imediata</option>
+          <option value="pullback" {% if preset and preset.trap_style == 'pullback' %}selected{% endif %}>Pullback</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
   <!-- Stop Loss -->
   <div class="card">
     <h3>Stop Loss</h3>
     <div class="grid-3">
       <label title="Modo de cálculo do Stop Loss: por pontos fixos ou por nível da região (InpStopMode).">
         Modo
-        <select name="stop.mode">
-          <option value="points" {% if preset and preset.stop.mode == 'points' %}selected{% endif %}>Pontos</option>
-          <option value="level" {% if preset and preset.stop.mode == 'level' %}selected{% endif %}>Nível</option>
+        <select name="stop.level_mode">
+          <option value="default" {% if preset and preset.stop.level_mode == 'default' %}selected{% endif %}>Padrão (Extremo)</option>
+          <option value="opposite_extreme" {% if preset and preset.stop.level_mode == 'opposite_extreme' %}selected{% endif %}>Extremo Oposto</option>
+          <option value="mid" {% if preset and preset.stop.level_mode == 'mid' %}selected{% endif %}>Meio</option>
         </select>
       </label>
       <label title="Distância do Stop Loss em pontos (InpSLPoints).">
         SL (pontos)
         <input type="number" name="stop.sl_points" value="{{ preset.stop.sl_points if preset else 800 }}" required>
+      </label>
+      <label title="Offset em pontos além do nível de SL (InpSLLevelOffset).">
+        SL Level Offset
+        <input type="number" name="stop.level_offset_points" value="{{ preset.stop.level_offset_points if preset else 0 }}" required>
       </label>
     </div>
   </div>
@@ -241,56 +278,3 @@
 
   <button type="submit" class="contrast">Salvar preset</button>
 </form>
-
-<script>
-async function savePreset() {
-    const form = document.getElementById('preset-form');
-    const formData = new FormData(form);
-    const data = {};
-
-    // Converte inputs aninhados como "detector.std_ref" em objetos JSON
-    for (const [key, value] of formData.entries()) {
-        const parts = key.split('.');
-        let current = data;
-        for (let i = 0; i < parts.length - 1; i++) {
-            current[parts[i]] = current[parts[i]] || {};
-            current = current[parts[i]];
-        }
-        
-        // Converte strings "true" / "false" para booleanos reais
-        let finalValue = value;
-        if (value === "true") finalValue = true;
-        else if (value === "false") finalValue = false;
-        // Converte números (mas ignora strings vazias para não virar 0)
-        else if (!isNaN(value) && value.trim() !== "") finalValue = Number(value);
-        
-        current[parts[parts.length - 1]] = finalValue;
-    }
-
-    // Tratamento especial para os inputs de tempo (09:00 -> 09:00:00)
-    if (data.session && data.session.window) {
-        if (data.session.window.start && data.session.window.start.length === 5) {
-            data.session.window.start += ":00";
-        }
-        if (data.session.window.end && data.session.window.end.length === 5) {
-            data.session.window.end += ":00";
-        }
-    }
-
-    try {
-        const response = await fetch('/api/preset', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'HX-Request': 'true'
-            },
-            body: JSON.stringify(data)
-        });
-
-        const html = await response.text();
-        form.outerHTML = html;
-    } catch (error) {
-        alert("Erro ao salvar: " + error);
-    }
-}
-</script>

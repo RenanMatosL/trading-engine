@@ -401,6 +401,27 @@ class StdDevV510Preset(BaseModel):
 
         return self
 
+class SimpleCandlePreset(BaseModel):
+    """Preset do EA v2.20 (entrada pela cor do candle)."""
+    name: str = "simple_candle"
+    strategy: str = "simple_candle"
+    
+    # Detector (igual ao v5.03)
+    detector: DetectorParams = Field(default_factory=DetectorParams)
+    
+    # Sessão
+    session: SessionParams = Field(default_factory=SessionParams)
+    
+    # Risco
+    risk: RiskParams = Field(default_factory=RiskParams)
+    
+    # Específico do v2.20
+    sl_points: int = 100
+    tp_points: int = 400
+    use_partial_exit: bool = True
+    partial_points: int = 200
+    partial_contracts: int = 1
+
 
 #+------------------------------------------------------------------+
 #| Loader                                                           |
