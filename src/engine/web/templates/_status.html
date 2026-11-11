@@ -1,124 +1,52 @@
 {#
-  Partial de status. Renderizado pelo endpoint `/api/status` (HTMX)
-  e incluído no `dashboard.html` inicialmente.
+  Partial de trades (F7b-2). Renderizado por /api/trades (HTMX).
 #}
 
-{% if engine_status == "ready" %}
-  <div class="grid-3">
-    <!-- Card: Conta -->
-    <div class="card">
-      <h3>Conta</h3>
-      <div class="metric">
-        <span class="metric-label">Login</span>
-        <span class="metric-value">{{ account.login }}</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">Servidor</span>
-        <span class="metric-value">{{ account.server }}</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">Saldo</span>
-        <span class="metric-value">
-          {{ "%.2f" | format(account.balance) }} {{ account.currency }}
-        </span>
-      </div>
-    </div>
+{% if trades and trades|length > 0 %}
+<table>
+  <thead>
+    <tr>
+      <th>Horário (Local)</th>
+      <th>Dir</th>
+      <th>Entrada</th>
+      <th>Saída</th>
+      <th>PnL</th>
+      <th>Motivo</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for t in trades %}
+    <tr>
+      <td>{{ t.region_bar_time_str }}</td>
+      
+      <td>
+        {% if t.exit_reason == "trigger_candle" %}
+          <span style="color: #9c27b0; font-weight: bold;">GATILHO</span>
+        {% else %}
+          {{ "BUY" if t.is_buy else "SELL" }}
+        {% endif %}
+      </td>
 
-    <!-- Card: Símbolo + Barras -->
-    <div class="card">
-      <h3>{{ symbol }}</h3>
-      <div class="metric">
-        <span class="metric-label">Barras carregadas</span>
-        <span class="metric-value">{{ bars_loaded }}</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">Último candle</span>
-        <span class="metric-value">{{ last_bar_time }}</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">Fechamento</span>
-        <span class="metric-value">{{ last_close }}</span>
-      </div>
-    </div>
-
-    <!-- Card: Detector -->
-    <div class="card">
-      <h3>Detector</h3>
-      {% if detector %}
-        <div class="metric">
-          <span class="metric-label">z-score</span>
-          <span class="metric-value">
-            <strong>{{ "%.2f" | format(detector.zscore) }}</strong>
-            {% if detector.is_signal %}
-              <span class="status-ok">● SINAL</span>
-            {% else %}
-              <span class="status-warn">○ sem sinal</span>
-            {% endif %}
-          </span>
-        </div>
-        <div class="metric">
-          <span class="metric-label">Média</span>
-          <span class="metric-value">{{ "%.1f" | format(detector.mean) }}</span>
-        </div>
-        <div class="metric">
-          <span class="metric-label">Desvio</span>
-          <span class="metric-value">{{ "%.1f" | format(detector.std) }}</span>
-        </div>
-        <div class="metric">
-          <span class="metric-label">Volume</span>
-          <span class="metric-value">{{ "%.0f" | format(detector.volume) }}</span>
-        </div>
-      {% else %}
-        <p class="status-warn">Janela incompleta (aguardando histórico)</p>
-      {% endif %}
-    </div>
-  </div>
-
-  {% if regions_count > 0 %}
-  <div class="card">
-    <h3>Regiões ativas ({{ regions_count }})</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Hora</th><th>Fase</th><th>Dir</th>
-          <th>SL</th><th>TP</th><th>Volume</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in regions %}
-        <tr>
-          <td>{{ r.bar_time }}</td>
-          <td>{{ r.phase }}</td>
-          <td>{{ "BUY" if r.is_buy else "SELL" }}</td>
-          <td>{{ r.stop_loss }}</td>
-          <td>{{ r.take_profit }}</td>
-          <td>{{ r.volume }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% endif %}
-
-{% elif engine_status == "no_mt5" %}
-  <article class="card">
-    <h3 class="status-warn">⚠ MT5 indisponível</h3>
-    <p>{{ error }}</p>
-    <p>
-      <strong>Opções:</strong><br>
-      — Abra o terminal MT5 e faça login<br>
-      — Ou rode com FakeGateway (sem MT5)
-    </p>
-  </article>
-
-{% elif engine_status == "error" %}
-  <article class="card">
-    <h3 class="status-error">✗ Erro</h3>
-    <pre>{{ error }}</pre>
-  </article>
-
+      <td>{{ "%.1f" | format(t.entry_price) }}</td>
+      <td>{{ "%.1f" | format(t.exit_price) }}</td>
+      
+      <td>
+        {% if t.exit_reason == "trigger_candle" %}
+          —
+        {% elif t.pnl_money > 0 %}
+          <span class="status-ok">+{{ "%.2f" | format(t.pnl_money) }}</span>
+        {% elif t.pnl_money < 0 %}
+          <span class="status-error">{{ "%.2f" | format(t.pnl_money) }}</span>
+        {% else %}
+          0.00
+        {% endif %}
+      </td>
+      
+      <td>{{ t.exit_reason }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
 {% else %}
-  <article class="card">
-    <p>Carregando status...</p>
-  </article>
+<p class="status-warn">Nenhum trade registrado ainda.</p>
 {% endif %}

@@ -305,7 +305,7 @@ def test_dashboard_page_render(client, preset_file):
     """GET / renderiza o dashboard com os IDs principais."""
     r = client.get("/")
     assert r.status_code == 200
-    assert 'id="status-container"' in r.text
+    assert 'id="sse-data"' in r.text
     assert "Equity Curve" in r.text
     assert "Últimos Trades" in r.text
 

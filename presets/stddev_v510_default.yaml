@@ -1,7 +1,7 @@
 name: test
 strategy: stddev_v510
 detector:
-  length: 180
+  length: 180 
   std_ref: 3.5
   volume_source: tick
   timeframe: M1
@@ -19,7 +19,7 @@ session:
   breakout_ttl_min: 160
   cooldown_after_sl_min: 0
   max_trades_day: 10
-  use_entry_block: true
+  use_entry_block: false
   entry_block:
     start: '10:00:00'
     end: '11:00:00'
@@ -65,7 +65,7 @@ regions:
   max_loc: 12
   valid_days: 3
   candidate_mode: first_ready
-trigger_mode: trap
+trigger_mode: normal #trap (ver se backtest de 601% nao foi no trap mode)
 trap_arm_points: 20.0
 trap_style: immediate
 trap_sl_points: 100.0

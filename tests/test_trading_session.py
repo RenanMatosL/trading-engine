@@ -365,3 +365,39 @@ def test_on_trade_event_partial_nao_consome_regiao():
     reg = sess.regions.get(region_time)
     assert reg is not None
     assert reg.phase.value == "BROKEN"
+
+def test_trading_session_nao_duplica_ordem_enquanto_aberta():
+    """Garante que a trava anti-spam impede múltiplos TradeIntents."""
+    from datetime import timezone
+    
+    # 1. Cria a sessão com o preset padrão dos testes
+    sess = TradingSession(_preset())
+
+    # 2. Cria uma região válida (exatamente como o teste de pullback faz)
+    sess.on_bar_closed(
+        bar=_bar(T0 + 10 * TICK, high=1200.0, low=1000.0, vol=5000.0),
+        zscore=5.0, now=T0 + 10 * TICK,
+    )
+    
+    # 3. Força o rompimento (para a região ficar no estado BROKEN)
+    sess.on_tick(_snap(ask=1210.0, bid=1205.0, now=T0 + 11 * TICK))
+    
+    reg = sess.regions.governing()
+    assert reg is not None
+
+    # 4. Simula que a primeira ordem foi enviada e executada
+    # (Isso preenche a _current_entry_region, ativando a trava)
+    sess.notify_trade_opened(
+        now=T0 + 12 * TICK,
+        region_bar_time=reg.bar_time,
+        entry_price=1100.0, # Preço de pullback
+        is_buy=True,
+    )
+
+    # 5. O preço volta para o nível de entrada novamente (pullback)
+    # Se a trava não existisse, ele emitiria um novo TradeIntent aqui.
+    decision = sess.on_tick(_snap(ask=1100.0, bid=1099.0, now=T0 + 13 * TICK))
+
+    # 6. A PROVA DOS 9: O intent DEVE ser None (bloqueado)
+    assert decision.intent is None
+    assert sess.current_entry_region is not None

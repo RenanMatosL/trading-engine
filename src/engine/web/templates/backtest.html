@@ -120,6 +120,11 @@ async function runBacktestWithChart(event) {
         const response = await fetch('/api/backtest/chart', {
             method: 'POST',
             body: formData,
+            cache: 'no-store', // <--- FORÇA O NAVEGADOR A BUSCAR O ARQUIVO NOVO
+            headers: {
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+            }
         });
         
         if (!response.ok) {
@@ -158,6 +163,9 @@ function renderSummary(summary) {
     
     const resultContainer = document.getElementById('result-summary-container');
     
+    // Formatando o Profit Factor para não quebrar o layout se for "inf"
+    const pf = typeof s.profit_factor === 'number' ? s.profit_factor.toFixed(2) : s.profit_factor;
+    
     const html = `
       <div class="card" style="background: #1a3a2a; border-color: #2ecc71; margin-bottom: 1rem;">
         <h3>Resultado do Backtest</h3>
@@ -169,7 +177,7 @@ function renderSummary(summary) {
           <div class="metric"><span class="metric-label">Return</span><span class="metric-value ${retClass}">${retSign}${s.return_pct.toFixed(2)}%</span></div>
           <div class="metric"><span class="metric-label">Sharpe</span><span class="metric-value">${s.sharpe.toFixed(2)}</span></div>
           <div class="metric"><span class="metric-label">Max Drawdown</span><span class="metric-value">${s.max_drawdown_pct.toFixed(2)}%</span></div>
-          <div class="metric"><span class="metric-label">Profit Factor</span><span class="metric-value">${s.profit_factor}</span></div>
+          <div class="metric"><span class="metric-label">Profit Factor</span><span class="metric-value">${pf}</span></div>
           <div class="metric"><span class="metric-label">Avg Win / Loss</span><span class="metric-value">${s.avg_win.toFixed(2)} / ${s.avg_loss.toFixed(2)}</span></div>
         </div>
         <p style="font-size: 0.8rem; color: var(--pico-muted-color);">
@@ -184,6 +192,12 @@ function renderSummary(summary) {
 
 function renderChart() {
     const container = document.getElementById('chart-container');
+    
+    // LIMPEZA CRUCIAL: remove o gráfico anterior da memória antes de criar um novo
+    if (currentChart) {
+        currentChart.remove();
+        currentChart = null;
+    }
     container.innerHTML = '';
 
     const chart = LightweightCharts.createChart(container, {

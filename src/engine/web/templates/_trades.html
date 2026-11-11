@@ -6,10 +6,10 @@
 <table>
   <thead>
     <tr>
-      <th>Exit</th>
+      <th>Horário</th>
       <th>Dir</th>
-      <th>Entry</th>
-      <th>Exit</th>
+      <th>Entrada</th>
+      <th>Saída</th>
       <th>PnL</th>
       <th>Motivo</th>
     </tr>
@@ -17,12 +17,23 @@
   <tbody>
     {% for t in trades %}
     <tr>
-      <td>{{ t.exit_time[:16] }}</td>
-      <td>{{ "BUY" if t.is_buy else "SELL" }}</td>
+      <td>{{ t.region_bar_time_str }}</td>
+      
+      <td>
+        {% if t.exit_reason == "trigger_candle" %}
+          <span style="color: #9c27b0; font-weight: bold;">GATILHO</span>
+        {% else %}
+          {{ "BUY" if t.is_buy else "SELL" }}
+        {% endif %}
+      </td>
+
       <td>{{ "%.1f" | format(t.entry_price) }}</td>
       <td>{{ "%.1f" | format(t.exit_price) }}</td>
+      
       <td>
-        {% if t.pnl_money > 0 %}
+        {% if t.exit_reason == "trigger_candle" %}
+          —
+        {% elif t.pnl_money > 0 %}
           <span class="status-ok">+{{ "%.2f" | format(t.pnl_money) }}</span>
         {% elif t.pnl_money < 0 %}
           <span class="status-error">{{ "%.2f" | format(t.pnl_money) }}</span>
@@ -30,6 +41,7 @@
           0.00
         {% endif %}
       </td>
+      
       <td>{{ t.exit_reason }}</td>
     </tr>
     {% endfor %}

@@ -15,9 +15,10 @@ def setup_logging(json_output: bool = False) -> None:
     )
     structlog.configure(
         processors=[
-            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
-            structlog.processors.add_log_level,
-            renderer,
+            structlog.processors.add_log_level,  # 1º: Adiciona o [info]
+            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=False),  # 2º: Adiciona o horário LOCAL
+            renderer,  # 3º: Imprime na tela
         ],
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+        # cache_logger_on_first_use=True, (opcional, mas recomendado para performance)
     )

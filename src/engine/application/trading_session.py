@@ -302,6 +302,7 @@ class TradingSession:
         big = is_big_candle(loc_stub, self._pricing) \
             if self._pricing.use_big_candle_rule else False
 
+        # AQUI É ONDE A REGIÃO É REGISTRADA
         result, region = self._regions.register(
             bar_time=bar.time,
             high=bar.high,
@@ -310,13 +311,16 @@ class TradingSession:
             big_candle=big,
             now=now,
         )
+
         if region is not None:
             self.save_state()
+            
         return BarResult(
             created=region is not None,
             register_result=result,
             region=region,
         )
+
 
     # ----------------------------------------------------------------
     # on_tick — F2c + F5c
@@ -343,6 +347,7 @@ class TradingSession:
             self.save_state()
 
         # F5c: atualiza estado do reforço (armar / detectar retorno)
+        # O reentry é calculado ANTES da trava, para poder operar mesmo com trade aberto.
         reentry_intent = self._maybe_reentry(snapshot)
 
         blocked = self._session_block_reason(snapshot)
@@ -786,6 +791,11 @@ class TradingSession:
     def _make_intent(
         self, region: RegionState, snapshot: MarketSnapshot
     ) -> TradeIntent | None:
+        # --- TRAVA ANTI-SPAM ---
+        # Se já temos um trade aberto ou uma ordem pendente, não manda outra entrada.
+        if self._current_entry_region is not None:
+            return None
+        
         loc = region.location
         is_buy = region.is_buy
         cfg = self._pricing
@@ -831,6 +841,12 @@ class TradingSession:
             partial_points=risk.partial_points,
             partial_percent=risk.partial_percent,
         )
+
+        # --- MARCAÇÃO ANTI-SPAM ---
+        # Sinaliza que uma ordem está sendo enviada para essa região.
+        self._current_entry_region = region.location.bar_time
+        self._current_entry_price = entry_price
+        self._current_is_buy = is_buy
 
         return TradeIntent(
             region=region,

@@ -5,36 +5,274 @@
 {% block content %}
 <h2>Dashboard</h2>
 
-<!-- Status principal (SSE — F7f) -->
-<div id="status-container"
-     hx-ext="sse"
-     sse-connect="/stream"
-     sse-swap="message">
-  <article class="card"><p>Conectando ao stream...</p></article>
+<!-- SSE Oculto: Só recebe os dados e repassa pro JS -->
+<div id="sse-data" 
+     hx-ext="sse" 
+     sse-connect="/stream" 
+     sse-swap="message" 
+     style="display:none;">
 </div>
 
-<!-- Equity curve (F7b-2) -->
-<div class="card"
-     hx-get="/api/equity"
-     hx-trigger="load, every 10s"
-     hx-swap="innerHTML">
-  <h3>Equity Curve</h3>
-  <article><p>Carregando equity...</p></article>
+<!-- Cards Principais -->
+<div class="grid-3">
+    <article class="card">
+        <h3>Conta</h3>
+        <p>Login: <span id="acc-login">—</span></p>
+        <p>Servidor: <span id="acc-server">—</span></p>
+        <p>Saldo: <span id="acc-balance">—</span></p>
+    </article>
+
+    <article class="card">
+        <h3>Símbolo Ativo</h3>
+        <p>Símbolo: <strong id="sym-name">—</strong></p>
+        <p>Último Preço: <span id="sym-price">—</span></p>
+        <p>Candles Avaliados: <span id="sym-bars">—</span></p>
+    </article>
+
+    <article class="card">
+        <h3>Detector</h3>
+        <p>Z-score: <strong id="det-zscore" style="color: #2ecc71;">—</strong></p>
+        <p>Média: <span id="det-mean">—</span></p>
+        <p>Desvio: <span id="det-std">—</span></p>
+        <p>Volume: <span id="det-vol">—</span></p>
+    </article>
 </div>
 
-<!-- Tabela de trades (F7b-2) -->
-<div class="card"
-     hx-get="/api/trades?limit=20"
-     hx-trigger="load, every 10s"
-     hx-swap="innerHTML">
-  <h3>Últimos Trades</h3>
-  <article><p>Carregando trades...</p></article>
+<!-- Gráfico e Tabela do Trade Atual -->
+<div class="grid-2">
+    <!-- Tabela do Candle Gatilho -->
+    <article class="card">
+        <h3>Status do Monitoramento</h3>
+        <table style="width: 100%; font-size: 0.9rem;">
+            <tbody>
+                <tr>
+                    <td><strong>Status:</strong></td>
+                    <td id="trade-status">Aguardando Sinal...</td>
+                </tr>
+                <tr>
+                    <td><strong>Direção:</strong></td>
+                    <td id="trade-dir">—</td>
+                </tr>
+                <tr>
+                    <td><strong>Candle Gatilho:</strong></td>
+                    <td id="trade-candle">—</td>
+                </tr>
+                <tr>
+                    <td><strong>Entrada (Pullback):</strong></td>
+                    <td id="trade-entry">—</td>
+                </tr>
+                <tr>
+                    <td><strong>Stop Loss:</strong></td>
+                    <td id="trade-sl" style="color: #ef5350;">—</td>
+                </tr>
+                <tr>
+                    <td><strong>Take Profit:</strong></td>
+                    <td id="trade-tp" style="color: #26a69a;">—</td>
+                </tr>
+            </tbody>
+        </table>
+    </article>
+
+    <!-- Gráfico do Ativo -->
+    <article class="card">
+        <h3>Gráfico (1M)</h3>
+        <div id="live-chart" style="width: 100%; height: 300px;"></div>
+    </article>
 </div>
 
-<div hx-get="/api/trades/log"
-     hx-trigger="load, every 5s"
-     hx-swap="innerHTML">
-  <p>Carregando log de trades...</p>
+<!-- Equity Curve e Trades (F7b-2) -->
+<div class="grid-2">
+    <div class="card" hx-get="/api/equity" hx-trigger="load, every 10s" hx-swap="innerHTML">
+        <h3>Equity Curve</h3>
+        <article><p>Carregando equity...</p></article>
+    </div>
+    <div class="card" hx-get="/api/trades?limit=20" hx-trigger="load, every 10s" hx-swap="innerHTML">
+        <h3>Últimos Trades</h3>
+        <article><p>Carregando trades...</p></article>
+    </div>
 </div>
 
+<!-- Script para consumir o SSE e atualizar a tela -->
+<script src="/static/lightweight-charts.js"></script>
+<script>
+    let chart = null;
+    let candleSeries = null;
+    let lastCandle = null;
+    let currentTickerLine = null;
+
+    function initChart() {
+        const container = document.getElementById('live-chart');
+        if (!container) return;
+
+        chart = LightweightCharts.createChart(container, {
+            layout: { background: { color: '#1a1a1a' }, textColor: '#d1d4dc' },
+            grid: { vertLines: { color: '#2a2a2a' }, horzLines: { color: '#2a2a2a' } },
+            timeScale: { timeVisible: true, secondsVisible: false },
+            width: container.clientWidth,
+            height: 300,
+        });
+
+        candleSeries = chart.addCandlestickSeries({
+            upColor: '#26a69a', downColor: '#ef5350',
+            borderVisible: false,
+            wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+        });
+        
+        // 1. Puxa os candles
+        fetch('/api/candles?limit=1000')
+            .then(res => res.json())
+            .then(data => {
+                if (data.candles && data.candles.length > 0) {
+                    candleSeries.setData(data.candles);
+                    lastCandle = data.candles[data.candles.length - 1];
+                    chart.timeScale().fitContent();
+                }
+            })
+            .catch(err => console.error("Erro ao carregar candles:", err));
+
+        // 2. Puxa o histórico de gatilhos e pinta de roxo (quadrados)
+        fetch('/api/history_markers')
+            .then(res => res.json())
+            .then(markers => {
+                if (markers && markers.length > 0) {
+                    const formattedMarkers = markers.map(m => ({
+                        time: m.time,
+                        position: 'aboveBar',   // Fica acima do candle
+                        color: '#9c27b0',       // Roxo
+                        shape: 'arrowDown',     // Seta para baixo
+                        text: 'Gatilho'         // Texto curto
+                    }));
+                    candleSeries.setMarkers(formattedMarkers);
+                }
+            })
+            .catch(err => console.error("Erro ao carregar gatilhos:", err));
+    }
+
+    window.addEventListener('DOMContentLoaded', initChart);
+
+    document.body.addEventListener('htmx:sseMessage', function(evt) {
+        try {
+            const data = JSON.parse(evt.detail.data);
+            
+            if (data.status === 'ready') {
+                if (data.account) {
+                    document.getElementById('acc-login').innerText = data.account.login;
+                    document.getElementById('acc-server').innerText = data.account.server;
+                    document.getElementById('acc-balance').innerText = `R$ ${data.account.balance.toFixed(2)}`;
+                }
+                
+                document.getElementById('sym-name').innerText = data.symbol;
+                document.getElementById('sym-price').innerText = data.last_close ? data.last_close.toFixed(2) : '—';
+                document.getElementById('sym-bars').innerText = data.candles_loaded || '—';
+                
+                if (data.detector) {
+                    document.getElementById('det-zscore').innerText = data.detector.zscore.toFixed(2);
+                    document.getElementById('det-mean').innerText = data.detector.mean.toFixed(1);
+                    document.getElementById('det-std').innerText = data.detector.std.toFixed(1);
+                    document.getElementById('det-vol').innerText = data.detector.volume.toFixed(0);
+                }
+
+                if (data.active_trade) {
+                    const t = data.active_trade;
+                    document.getElementById('trade-status').innerText = t.status;
+                    document.getElementById('trade-dir').innerText = t.direction || '—';
+                    document.getElementById('trade-candle').innerText = t.candle_time || '—';
+                    document.getElementById('trade-high-low').innerText = (t.candle_high && t.candle_low) ? `${t.candle_high.toFixed(0)} / ${t.candle_low.toFixed(0)}` : '—';
+                    document.getElementById('trade-entry').innerText = t.entry ? t.entry.toFixed(2) : '—';
+                    document.getElementById('trade-sl').innerText = t.sl ? t.sl.toFixed(2) : '—';
+                    document.getElementById('trade-tp').innerText = t.tp ? t.tp.toFixed(2) : '—';
+                }
+
+                if (candleSeries && data.last_close) {
+                    const now = new Date();
+                    const timeSec = Math.floor(now.getTime() / 1000);
+                    const minuteTime = Math.floor(timeSec / 60) * 60;
+
+                    if (!lastCandle || lastCandle.time < minuteTime) {
+                        lastCandle = { time: minuteTime, open: data.last_close, high: data.last_close, low: data.last_close, close: data.last_close };
+                    } else {
+                        lastCandle.high = Math.max(lastCandle.high, data.last_close);
+                        lastCandle.low = Math.min(lastCandle.low, data.last_close);
+                        lastCandle.close = data.last_close;
+                    }
+                    candleSeries.update(lastCandle);
+                }
+            }
+        } catch (e) {
+            console.error("Erro ao ler SSE", e);
+        }
+    });
+
+    // Inicia o gráfico quando a página carregar
+    window.addEventListener('DOMContentLoaded', initChart);
+
+    // Ouve as mensagens do HTMX SSE
+    document.body.addEventListener('htmx:sseMessage', function(evt) {
+        try {
+            const data = JSON.parse(evt.detail.data);
+            
+            if (data.status === 'ready') {
+                // Atualiza Conta
+                if (data.account) {
+                    document.getElementById('acc-login').innerText = data.account.login;
+                    document.getElementById('acc-server').innerText = data.account.server;
+                    document.getElementById('acc-balance').innerText = `R$ ${data.account.balance.toFixed(2)}`;
+                }
+                // Atualiza Símbolo
+                document.getElementById('sym-name').innerText = data.symbol;
+                document.getElementById('sym-price').innerText = data.last_close ? data.last_close.toFixed(2) : '—';
+                document.getElementById('sym-bars').innerText = data.candles_loaded || '—';
+                
+                // Atualiza Detector
+                if (data.detector) {
+                    document.getElementById('det-zscore').innerText = data.detector.zscore.toFixed(2);
+                    document.getElementById('det-mean').innerText = data.detector.mean.toFixed(1);
+                    document.getElementById('det-std').innerText = data.detector.std.toFixed(1);
+                    document.getElementById('det-vol').innerText = data.detector.volume.toFixed(0);
+                }
+
+                // Atualiza Status do Trade
+                if (data.active_trade) {
+                    const t = data.active_trade;
+                    document.getElementById('trade-status').innerText = t.status;
+                    document.getElementById('trade-dir').innerText = t.direction || '—';
+                    document.getElementById('trade-candle').innerText = t.candle_time || '—';
+                    document.getElementById('trade-entry').innerText = t.entry ? t.entry.toFixed(2) : '—';
+                    document.getElementById('trade-sl').innerText = t.sl ? t.sl.toFixed(2) : '—';
+                    document.getElementById('trade-tp').innerText = t.tp ? t.tp.toFixed(2) : '—';
+                }
+
+                // Atualiza o Gráfico em Tempo Real (se o gráfico já estiver pronto)
+                if (candleSeries && data.last_close) {
+                    // Pega o timestamp atual arredondado para o minuto
+                    const now = new Date();
+                    const timeSec = Math.floor(now.getTime() / 1000);
+                    const minuteTime = Math.floor(timeSec / 60) * 60; // Arredonda para o início do minuto
+
+                    // Se mudou o minuto, cria um novo candle. Se não, atualiza o atual.
+                    if (!lastCandle || lastCandle.time < minuteTime) {
+                        // Novo candle
+                        lastCandle = {
+                            time: minuteTime,
+                            open: data.last_close,
+                            high: data.last_close,
+                            low: data.last_close,
+                            close: data.last_close
+                        };
+                    } else {
+                        // Atualiza o candle atual
+                        lastCandle.high = Math.max(lastCandle.high, data.last_close);
+                        lastCandle.low = Math.min(lastCandle.low, data.last_close);
+                        lastCandle.close = data.last_close;
+                    }
+                    
+                    // Envia o candle atualizado para o gráfico
+                    candleSeries.update(lastCandle);
+                }
+            }
+        } catch (e) {
+            console.error("Erro ao ler SSE", e);
+        }
+    });
+</script>
 {% endblock %}

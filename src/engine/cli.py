@@ -35,6 +35,7 @@ from engine.application.registry import StrategyRegistry
 from engine.domain.strategy.strategy import StrategyConfig
 from engine.application.backtester import Backtester
 from engine.infrastructure.data.csv_loader import load_bars_csv
+from engine.domain.state.store import TradeRecord
 
 log = structlog.get_logger()
 
@@ -91,25 +92,79 @@ def cmd_check_config(args: argparse.Namespace, settings: EngineSettings) -> int:
     return 0
 
 
+#+------------------------------------------------------------------+
+#| NOVO: Função para salvar o Candle Gatilho no Banco (Independente) |
+#+------------------------------------------------------------------+
+def _save_trigger_candle(store: SqliteStateStore, bar, zscore: float, std_ref: float):
+    """Salva o candle gatilho no banco para pintura no gráfico."""
+    if zscore < std_ref:
+        return
+    
+    # Verifica se já não está salvo para não duplicar
+    try:
+        exists = store.list_trades(limit=500)
+        ja_existe = any(t.region_bar_time == bar.time and t.exit_reason == "trigger_candle" for t in exists)
+        if ja_existe:
+            return
+    except AttributeError:
+        # Se o banco não tiver a função (como no teste), segue em frente
+        pass
+
+    trigger = TradeRecord(
+        id=None,
+        region_bar_time=bar.time,
+        is_buy=True, # Direção irrelevante para a pintura visual do candle
+        entry_time=bar.time,
+        entry_price=bar.open,
+        exit_time=bar.time,
+        exit_price=bar.close,
+        stop_loss=bar.low,   # Minima do candle
+        take_profit=bar.high, # Maxima do candle
+        initial_volume=0.0,
+        pnl_points=0.0,
+        pnl_money=0.0,
+        exit_reason="trigger_candle",
+    )
+    try:
+        store.save_trade(trigger)
+    except Exception as e:
+        log.warning("save_trigger_falhou", erro=str(e))
+
+
+def _warmup_historico(gw, symbol, cfg, detector, store):
+    """Puxa os candles dos últimos dias e salva os gatilhos no banco."""
+    from datetime import timedelta
+    
+    dias_para_puxar = 2
+    log.info("warmup_historico_inicio", symbol=symbol, dias=dias_para_puxar)
+    
+    # Puxa candles do MT5 (cerca de 2500 candles M1 = ~2 dias de pregão)
+    candles_hist = gw.closed_bars(symbol, cfg.preset.detector.timeframe, 2500)
+    
+    if not candles_hist:
+        return
+    
+    # Filtra os candles (garante que são recentes)
+    data_limite = datetime.now(tz=timezone.utc) - timedelta(days=dias_para_puxar)
+    candles_filtrados = [c for c in candles_hist if c.time >= data_limite]
+    
+    gatilhos_salvos = 0
+    for bar in sorted(candles_filtrados, key=lambda c: c.time):
+        reading = detector.on_bar_closed(bar)
+        if reading is not None and reading.zscore >= cfg.preset.detector.std_ref:
+            _save_trigger_candle(store, bar, reading.zscore, cfg.preset.detector.std_ref)
+            gatilhos_salvos += 1
+            
+    log.info("warmup_historico_fim", symbol=symbol, gatilhos_salvos=gatilhos_salvos)
+
+
 def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
-    """Loop principal — conecta, processa ticks, decide, executa.
-
-    F5f: suporta N estratégias em paralelo.
-    F11: suporta N símbolos em paralelo (--symbols=WIN$N,WDO$N).
-
-    Flags:
-      --strategies=A,B: nomes das estratégias (default: todas do registry)
-      --symbols=WIN$N,WDO$N: símbolos (default: o do .env)
-      --dry-run: usa FakeGateway
-      --fast: não dorme entre iterações
-      --max-ticks N: para após N iterações
-      --db PATH: SQLite (default: engine.db)
-    """
+    """Loop principal — conecta, processa ticks, decide, executa."""
     # ------------------------------------------------------------------
     # 1. Resolver estratégias
     # ------------------------------------------------------------------
     preset = load_preset(args.preset or settings.preset)
-    base_name = preset.strategy  # "stddev_v510" (tipo), não "v510_default" (nome)
+    base_name = preset.strategy
 
     registry = StrategyRegistry()
     registry.register(StrategyConfig(
@@ -154,7 +209,7 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
         return 2
 
     # ------------------------------------------------------------------
-    # 3. Criar N sessões (uma por estratégia × símbolo)
+    # 3. Criar N sessões
     # ------------------------------------------------------------------
     from engine.domain.risk.exchange_calendar import B3Calendar
     calendar = B3Calendar()
@@ -165,7 +220,7 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
             store = SqliteStateStore(args.db or "engine.db")
             session = TradingSession(
                 cfg.preset,
-                symbol=symbol,  # F11: passa o símbolo
+                symbol=symbol,
                 state_store=store,
                 calendar=calendar,
             )
@@ -176,6 +231,29 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
                 std_ref=cfg.preset.detector.std_ref,
                 source=cfg.preset.detector.volume_source,
             )
+
+            # --- WARM-UP: Carrega o histórico inicial ---
+            last_bar_time = None
+            try:
+                warmup_count = cfg.preset.detector.length + 1
+                warmup_bars = gw.closed_bars(symbol, cfg.preset.detector.timeframe, warmup_count)
+                warmup_bars = sorted(warmup_bars, key=lambda b: b.time)
+                
+                for b in warmup_bars:
+                    reading = detector.on_bar_closed(b)
+                    if reading is not None:
+                        session.on_bar_closed(b, reading.zscore, b.time)
+                
+                if warmup_bars:
+                    last_bar_time = warmup_bars[-1].time
+                log.info("warmup_concluido", symbol=symbol, bars=len(warmup_bars))
+            except Exception as exc:
+                log.warning("warmup_falhou", symbol=symbol, erro=str(exc))
+            
+            # --- WARM-UP HISTÓRICO (Pinta os gatilhos do dia anterior) ---
+            _warmup_historico(gw, symbol, cfg, detector, store)
+            # ----------------------------------------------------
+
             sessions.append({
                 "config": cfg,
                 "store": store,
@@ -183,9 +261,9 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
                 "executor": executor,
                 "poller": poller,
                 "detector": detector,
-                "symbol": symbol,  # F11: símbolo desta sessão
+                "symbol": symbol,
                 "magic": cfg.magic,
-                "last_bar_time": None,
+                "last_bar_time": last_bar_time,
                 "last_poll_time": datetime.now(tz=timezone.utc) - timedelta(minutes=5),
                 "pending_reentry": None,
                 "breakeven_applied": False,
@@ -221,7 +299,6 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
                 log.info("engine_run_max_ticks", ticks=ticks)
                 break
 
-            # Para cada símbolo, busca o tick e processa as sessões daquele símbolo
             for symbol in symbols:
                 try:
                     tick = gw.symbol_info_tick(symbol)
@@ -232,14 +309,12 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
                 now = tick.time
                 snapshot = MarketSnapshot(ask=tick.ask, bid=tick.bid, now=now)
 
-                # Bars fechadas
                 try:
-                    bars = gw.closed_bars(symbol, preset.detector.timeframe, 1)
+                    bars = gw.closed_bars(symbol, preset.detector.timeframe, 3)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("bars_falhou", symbol=symbol, erro=str(exc))
                     bars = []
 
-                # Processa todas as sessões deste símbolo
                 for st in sessions:
                     if st["symbol"] != symbol:
                         continue
@@ -270,7 +345,7 @@ def cmd_run(args: argparse.Namespace, settings: EngineSettings) -> int:
 
 
 #+------------------------------------------------------------------+
-#| F5f/F11: processa 1 tick para 1 sessão (estratégia × símbolo)    |
+#| F5f/F11: processa 1 tick para 1 sessão                           |
 #+------------------------------------------------------------------+
 def _process_strategy_tick(
     *,
@@ -292,12 +367,15 @@ def _process_strategy_tick(
 
     # 1. Novo candle fechado?
     if bars:
-        last = bars[0]
-        if st["last_bar_time"] is None or last.time > st["last_bar_time"]:
-            st["last_bar_time"] = last.time
-            reading = detector.on_bar_closed(last)
-            if reading is not None:
-                session.on_bar_closed(last, reading.zscore, now)
+        bars_sorted = sorted(bars, key=lambda b: b.time)
+        for last in bars_sorted:
+            if st["last_bar_time"] is None or last.time > st["last_bar_time"]:
+                st["last_bar_time"] = last.time
+                reading = detector.on_bar_closed(last)
+                if reading is not None:
+                    session.on_bar_closed(last, reading.zscore, now)
+                    # NOVO: Salva o gatilho no banco em tempo real
+                    _save_trigger_candle(st["store"], last, reading.zscore, cfg.preset.detector.std_ref)
 
     # 2. on_tick → TradeIntent
     decision = session.on_tick(snapshot)
@@ -350,7 +428,6 @@ def _process_strategy_tick(
     for ev in events:
         session.on_trade_event(ev, now=now)
 
-        # F5c: reforço preenchido → arma TP/SL
         if isinstance(ev, ReentryFilled) and st["pending_reentry"] is not None:
             ri = st["pending_reentry"]
             executor.place_reentry_exits(
@@ -363,7 +440,6 @@ def _process_strategy_tick(
             )
             st["pending_reentry"] = None
 
-        # F5a: breakeven após Tier 1
         if (isinstance(ev, PartialFilled)
                 and cfg.preset.risk.breakeven_after_partial
                 and not st["breakeven_applied"]):
@@ -541,10 +617,8 @@ def cmd_backtest(args: argparse.Namespace, settings: EngineSettings) -> int:
     """Roda backtest sobre um CSV de candles (F6)."""
     from datetime import datetime as _dt
 
-    # Carrega preset
     preset = load_preset(args.preset or settings.preset)
 
-    # Carrega CSV
     csv_path = args.csv
     if not csv_path:
         log.error("backtest_csv_obrigatorio")
@@ -559,7 +633,6 @@ def cmd_backtest(args: argparse.Namespace, settings: EngineSettings) -> int:
         log.error("backtest_csv_vazio")
         return 2
 
-    # Filtra por data (opcional)
     if args.from_date:
         try:
             dt_from = _dt.fromisoformat(args.from_date).replace(tzinfo=bars[0].time.tzinfo)
@@ -580,7 +653,6 @@ def cmd_backtest(args: argparse.Namespace, settings: EngineSettings) -> int:
         log.error("backtest_sem_barras_no_periodo")
         return 2
 
-    # Roda backtest
     bt = Backtester(
         preset,
         initial_balance=args.initial_balance,
@@ -589,7 +661,6 @@ def cmd_backtest(args: argparse.Namespace, settings: EngineSettings) -> int:
     )
     result = bt.run(bars)
 
-    # Log resumido
     stats = result.simulation.stats
     log.info(
         "backtest_result",
@@ -611,9 +682,7 @@ def cmd_backtest(args: argparse.Namespace, settings: EngineSettings) -> int:
         ),
     )
 
-    # Exporta trades + equity (opcional)
     if args.output:
-        from pathlib import Path
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
         payload = {

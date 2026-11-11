@@ -1,12 +1,10 @@
-📄 README.md (Completo e Atualizado)
-markdown
 # Trading Engine — Motor Multi-Estratégia
 
 Porte da estratégia **StdDevVolumeBreakout v4.60** para Python (API oficial
 MetaTrader5), arquitetado em DDD/bounded contexts para múltiplas estratégias
 plugáveis. Plano completo: `Plano_Motor_Trading_Python.md`.
 
-**Estado atual:** **F0 → F12 concluídos.** O motor **detecta** sinais (paridade
+**Estado atual:** **F0 → F13 concluídos.** O motor **detecta** sinais (paridade
 bit-a-bit com o EA), **gerencia** regiões, **orquestra** sessão, **simula**
 trades, **executa** ordens (real + fake), **reage** a fills/SL/TP, **persiste**
 estado em SQLite, **roda em loop** real, **compara** decisões com o EA em tempo
@@ -17,11 +15,13 @@ simulador**, **suporta multi-estratégia** (N sessões por tick), **suporta
 multi-símbolo** (`--symbols=WIN$N,WDO$N`), **roda backtest próprio** (sem MT5,
 com métricas e gráfico de candles), tem **modo armadilha (trap)**, **frontend
 web** completo (FastAPI + HTMX + Pico + uPlot + Lightweight Charts) com
-**dashboard** (status SSE + equity + trades), **config** (edição de preset),
-**backtest** (upload CSV + resultado + gráfico com volume e timeframes) e
-**shadow** (comparação read-only com o EA), e **observabilidade** (métricas
-Prometheus no endpoint `/metrics`).
-**F13 (Operação Real em conta demo) é o próximo passo.**
+**dashboard** (status SSE + gráfico de candles ao vivo + equity + trades),
+**config** (edição de preset), **backtest** (upload CSV + resultado + gráfico com volume e timeframes) e
+**shadow** (comparação read-only com o EA), **observabilidade** (métricas
+Prometheus no endpoint `/metrics`), e **operação demo (F13)** com **trava anti-spam** 
+(impede ordens duplicadas), **warm-up histórico** (puxa os 2 últimos dias e salva os 
+gatilhos no banco) e **pintura de gatilhos no gráfico** (setas roxas sobre os candles).
+**F14 (Correção de fuso horário) é o próximo passo.**
 
 ---
 
@@ -32,6 +32,7 @@ Prometheus no endpoint `/metrics`).
 # 2. No diretório do projeto:
 uv venv
 uv pip install -e ".[mt5,dev,web]"
+uv add tzdata               # F13: necessário para ZoneInfo no Windows
 copy .env.example .env      # e preencha login/senha/servidor/símbolo
 
 # 3. Rodar
@@ -40,7 +41,7 @@ uv run engine check-config        # audita TODAS as 7 seções do preset
 uv run engine status              # conecta no terminal MT5 aberto
 uv run engine status --fake       # sem MT5 (gateway sintético p/ desenvolvimento)
 uv run engine run --dry-run --fast --max-ticks 10   # loop de teste sem MT5
-uv run engine run --demo --db engine_demo.db        # loop real em demo
+uv run engine run --demo --symbols=WINZ26 > logs_demo.txt 2>&1  # operação demo
 uv run engine run --demo --symbols=WIN$N,WDO$N      # multi-símbolo
 uv run engine shadow --ea-magic 20260718 --duration 60   # modo sombra
 uv run engine backtest --csv tests/fixtures/sample_bars.csv   # backtest
@@ -50,7 +51,6 @@ Linux/macOS (desenvolvimento sem MT5): uv pip install -e ".[dev]" e usar --fake.
 
 Frontend: abra http://localhost:8000 no navegador (com o uvicorn rodando).
 Observabilidade: acesse http://localhost:8000/metrics (formato Prometheus).
-
 Estrutura atual
 text
 src/engine/
@@ -75,8 +75,7 @@ src/engine/
 ├── application/                     # orquestração (sem MT5, sem ordens)
 │   ├── status.py                    # get_status (F0/F1)
 │   ├── intent.py                    # TradeIntent, ReentryIntent, TickDecision, BarResult
-│   ├── trading_session.py           # TradingSession (+ state_store + on_trade_event +
-│   │                                #   calendar + persistência + save_trade + F9 + F11)
+│   ├── trading_session.py           # TradingSession (+ TRAVA ANTI-SPAM em _make_intent, F13)
 │   ├── events.py                    # EventFeed, BarEvent, TickEvent (F2d)
 │   ├── simulation.py                # run_simulation, SimulatedExecutor
 │   │                                #   + slippage/spread (F5e) + parciais/reforço (F8)
@@ -94,6 +93,7 @@ src/engine/
 ├── infrastructure/                  # ACL MetaTrader5 + persistência + CSV
 │   ├── mt5/
 │   │   ├── gateway.py               # BrokerGateway (Protocol) + RealMT5Gateway
+│   │   │                            #   + F13: ORDER_TIME_DAY (correção expiração)
 │   │   └── fake.py                  # FakeGateway (determinístico)
 │   ├── logging/setup.py             # structlog (console / JSON)
 │   ├── state/
@@ -107,19 +107,19 @@ src/engine/
 │   ├── deps.py                      # gateway, settings
 │   ├── schemas.py                   # Pydantic schemas
 │   ├── routes/
-│   │   ├── trades.py                # GET /api/trades
+│   │   ├── trades.py                # F13: /api/trades, /api/history_markers, /api/candles
 │   │   ├── equity.py                # GET /api/equity
 │   │   ├── preset.py                # GET/POST /api/preset
 │   │   ├── backtest.py              # GET/POST /api/backtest + /api/backtest/chart
 │   │   ├── shadow.py                # GET/POST /api/shadow
-│   │   ├── stream.py                # GET /stream (SSE)
+│   │   ├── stream.py                # F13: GET /stream (SSE JSON)
 │   │   └── metrics.py               # GET /metrics (Prometheus) — F12
 │   ├── templates/
 │   │   ├── base.html                # layout + HTMX + Pico + uPlot + json-enc + sse + lightweight-charts
-│   │   ├── dashboard.html           # página principal (F7a + F7b-2 + F7f)
+│   │   ├── dashboard.html           # F13: Dashboard com gráfico em tempo real e tabela de status
 │   │   ├── _status.html             # partial (status)
 │   │   ├── _status_sse.html         # partial (status via SSE)
-│   │   ├── _trades.html             # partial (trades)
+│   │   ├── _trades.html             # partial (trades, com horário formatado)
 │   │   ├── _equity.html             # partial (equity, uPlot)
 │   │   ├── config.html              # página de config
 │   │   ├── _preset.html             # partial (formulário, 7+ blocos)
@@ -137,8 +137,11 @@ src/engine/
 │
 └── cli.py                           # engine status | check-config | run | shadow |
                                      #   backtest | version
+                                     # F13: _warmup_historico, _save_trigger_candle
+
 presets/
 └── stddev_v510_default.yaml         # todos os inputs do EA v4.60 comentados
+
 tests/
 ├── fixtures/
 │   ├── v510_expected.csv            # 679 candles WIN$N M1 + z-score do MT5
@@ -298,6 +301,19 @@ Endpoint GET /metrics (formato text/plain)
 
 Contadores de trades abertos/fechados, PnL, taxa de acerto
 
+F13 ✔ — Operação Demo (Validação em conta real)
+Trava Anti-Spam: _make_intent verifica _current_entry_region e retorna None se já houver um trade em andamento (impede ordens duplicadas).
+
+Warm-up Histórico: _warmup_historico no cli.py puxa 2500 candles (~2 dias) e salva os trigger_candle no banco.
+
+Candle Gatilho (Roxo): Rota /api/history_markers e dashboard.html pintam setas roxas acima dos candles gatilho.
+
+Dashboard em Tempo Real: stream.py envia JSON com dados da conta, detector, status e candles. dashboard.html usa JavaScript para atualizar os números e o gráfico via candleSeries.update().
+
+Correção de Expiração: gateway.py usa ORDER_TIME_DAY em vez de GTC (Clear não aceita GTC para WINZ26).
+
+Correção do Loop: process_strategy_tick só chama _save_trigger_candle quando o candle é novo, evitando duplicação.
+
 Decisões de arquitetura (registradas)
 Tema	Decisão
 Config	Pydantic 2 + pydantic-settings (.env)
@@ -322,6 +338,9 @@ SSE (F7f)	StreamingResponse + hx-ext="sse"
 Modo Trap (F9)	trigger_mode: trap, inverte direção, SL/TP recalculados
 Multi-símbolo (F11)	--symbols=WIN$N,WDO$N; uma sessão por símbolo
 Observabilidade (F12)	Endpoint /metrics (Prometheus)
+Operação Demo (F13)	Trava Anti-Spam + Warm-up + Gatilhos Roxos + Dashboard ao vivo
+Expiração (F13)	mt5.ORDER_TIME_DAY (GTC rejeitado pela Clear)
+Fuso Horário (F13)	⚠️ Pendente de correção (ver seção de Bugs)
 Roadmap
 Fase	Descrição	Status
 F0	Esqueleto (CLI, config, ACL, fake)	✔
@@ -355,8 +374,9 @@ F9	Modo Armadilha (Trap)	✔
 F10	Gráfico de Candles (volume, timeframes, medição)	✔
 F11	Multi-símbolo (--symbols)	✔
 F12	Observabilidade (Prometheus /metrics)	✔
-F13	Operação Real (validação em demo)	⏳ próximo
-F14+	Estratégias adicionais, multi-símbolo avançado, etc	⏳ opcional
+F13	Operação Demo (Trava Anti-Spam, Warm-up, Gatilhos Roxos)	✔
+F14	Correção de Fuso Horário (Dashboard vs MT5)	⏳ próximo
+F15	Log Detalhado de Trades (frontend com PnL)	⏳ futuro
 Suíte de testes
 powershell
 uv run pytest -q                              # ~241 testes
@@ -372,7 +392,7 @@ uv run pytest tests/test_registry.py -v       # multi-estratégia
 uv run pytest tests/test_csv_loader.py -v     # CSV loader
 uv run pytest tests/test_metrics.py -v        # métricas
 uv run pytest tests/test_backtester.py -v     # Backtester
-uv run pytest tests/test_web.py -v            # frontend (F7a-F10)
+uv run pytest tests/test_web.py -v            # frontend (F7a-F13)
 Comandos úteis (CLI + Frontend)
 powershell
 # Backend (CLI)
@@ -382,6 +402,7 @@ uv run engine status --fake                        # detector + gateway sintéti
 uv run engine status                               # detector + gateway real
 uv run engine run --dry-run --fast --max-ticks 10  # loop de teste
 uv run engine run --dry-run --fast --max-ticks 3 --strategies=stddev_v510
+uv run engine run --demo --symbols=WINZ26 > logs_demo.txt 2>&1 # operação demo
 uv run engine run --demo --symbols=WIN$N,WDO$N     # multi-símbolo
 uv run engine shadow --ea-magic 20260718 --duration 60
 uv run engine backtest --csv PATH
@@ -393,6 +414,23 @@ uv run uvicorn engine.web.app:app --reload --port 8000
 #        http://localhost:8000/backtest (backtest + gráfico)
 #        http://localhost:8000/shadow   (shadow - read only)
 #        http://localhost:8000/metrics  (Prometheus - F12)
+Bugs conhecidos / pontos de atenção
+Fuso Horário (F13): O Dashboard exibe horários errados nos trigger_candles (ex: 03:03 em vez de 09:03). O servidor da Clear envia o horário em UTC, e as camadas de conversão (gateway.py + trades.py) estão subtraindo horas em dobro. Solução sugerida: Reverter o gateway.py para salvar em UTC puro; no trades.py, usar o horário bruto do banco (sem conversão); descobrir o offset exato do servidor da Clear.
+
+tzdata no Windows: O pacote tzdata precisa estar instalado para ZoneInfo funcionar no Windows.
+
+Código morto: O arquivo routes/backtest.py tem um segundo return JSONResponse inalcançável (limpar na próxima sessão).
+
+TemplateNotFound: partials começam com _, páginas não.
+
+HTMX upload: hx-encoding="multipart/form-data".
+
+SSE: StreamingResponse(media_type="text/event-stream").
+
+Modo Trap: trigger_mode é string ("trap" ou "normal").
+
+/metrics vazio: Comportamento esperado (processo web separado do CLI).
+
 Referências
 EA de referência: StdDevVolumeBreakout.mq5 v4.60 (Renan)
 

@@ -296,44 +296,6 @@ async def run_backtest_chart(
         "summary": summary,
     })
 
-    # 2. Converte trades para markers
-    markers = []
-    for trade in result.simulation.trades:
-        # Entry marker
-        entry_ts = int(trade.entry_time.timestamp())
-        markers.append({
-            "time": entry_ts,
-            "position": "belowBar" if trade.is_buy else "aboveBar",
-            "color": "green" if trade.is_buy else "red",
-            "shape": "arrowUp" if trade.is_buy else "arrowDown",
-            "text": f"{'BUY' if trade.is_buy else 'SELL'} {trade.initial_volume:.0f}",
-        })
-        # Exit marker (último fill)
-        if trade.fills:
-            exit_fill = trade.fills[-1]
-            exit_ts = int(exit_fill.time.timestamp())
-            exit_color = "green" if trade.pnl_money > 0 else "red"
-            markers.append({
-                "time": exit_ts,
-                "position": "aboveBar" if trade.is_buy else "belowBar",
-                "color": exit_color,
-                "shape": "circle",
-                "text": f"{trade.exit_reason.value} {trade.pnl_points:+.0f}pts",
-            })
-
-    # Ordena markers por tempo (Lightweight Charts exige ordem cronológica)
-    markers.sort(key=lambda m: m["time"])
-
-    return JSONResponse(content={
-        "candles": candles,
-        "volumes": volumes,
-        "markers": markers,
-        "summary": {
-            "n_bars": len(bars),
-            "n_trades": len(result.simulation.trades),
-        },
-    })
-
 
 #+------------------------------------------------------------------+
 #| GET /api/backtest — formulário inicial                           |

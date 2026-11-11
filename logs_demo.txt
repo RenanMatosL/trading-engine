@@ -1,0 +1,26 @@
+2026-11-11 17:16:46 [info     ] strategy_registered            magic=0 name=stddev_v510
+2026-11-11 17:16:48 [info     ] warmup_concluido               bars=181 symbol=WINZ26
+2026-11-11 17:16:48 [info     ] warmup_historico_inicio        dias=2 symbol=WINZ26
+2026-11-11 17:16:49 [info     ] warmup_historico_fim           gatilhos_salvos=9 symbol=WINZ26
+2026-11-11 17:16:49 [info     ] strategy_session_created       magic=0 name=stddev_v510 preset=test symbol=WINZ26
+2026-11-11 17:16:49 [info     ] engine_run_start               dry_run=False max_ticks=0 n_sessions=1 n_strategies=1 poll_interval=1.0 strategies=['stddev_v510'] symbols=['WINZ26']
+2026-11-11 17:33:49 [info     ] engine_run_interrupted
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "D:\PycharmProjetos\Cherry_Python\trading-engine-F0 (1)\trading-engine\.venv\Scripts\engine.exe\__main__.py", line 10, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "D:\PycharmProjetos\Cherry_Python\trading-engine-F0 (1)\trading-engine\src\engine\cli.py", line 794, in main
+    return cmd_run(args, settings)
+  File "D:\PycharmProjetos\Cherry_Python\trading-engine-F0 (1)\trading-engine\src\engine\cli.py", line 338, in cmd_run
+    st["session"].save_state()
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\PycharmProjetos\Cherry_Python\trading-engine-F0 (1)\trading-engine\src\engine\application\trading_session.py", line 216, in save_state
+    self._store.save_session(self._snapshot())
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "D:\PycharmProjetos\Cherry_Python\trading-engine-F0 (1)\trading-engine\src\engine\infrastructure\state\sqlite_store.py", line 110, in save_session
+    self._conn.commit()
+    ~~~~~~~~~~~~~~~~~^^
+KeyboardInterrupt
+^C

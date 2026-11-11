@@ -1,121 +1,133 @@
-"""Endpoint `/stream` (F7f) — SSE do status em tempo real.
-
-Empurra o HTML do partial `_status_sse.html` a cada 2s.
-Cliente: HTMX com `hx-ext="sse" sse-connect="/stream" sse-swap="message"`.
-"""
+"""Endpoint `/stream` (F7f) — SSE do status em tempo real (JSON)."""
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import structlog
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
-from fastapi.templating import Jinja2Templates
 
 from engine.application.status import get_status
 from engine.config.presets import load_preset
 from engine.config.settings import EngineSettings
+from engine.domain.strategy.detector import VolumeStdDetector
+from engine.infrastructure.state.sqlite_store import SqliteStateStore
 from engine.web.deps import get_gateway
 
 
 log = structlog.get_logger()
-
 router = APIRouter(tags=["stream"])
 
-_TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
-templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
-
-# Intervalo entre emissões (segundos)
 _POLL_INTERVAL = 2.0
 
 
-async def _render_status(request: Request) -> str:
-    """Renderiza o partial `_status_sse.html` como uma string SSE."""
+def _get_active_trade_info(request: Request) -> dict:
+    """Busca na sessão do motor as informações do trade atual."""
+    try:
+        store = SqliteStateStore(request.app.state.db_path)
+        trades = store.list_trades(limit=1)
+        store.close()
+        
+        if trades and trades[0].exit_reason == "open":
+            t = trades[0]
+            return {
+                "status": "Monitorando Pullback",
+                "direction": "COMPRA" if t.is_buy else "VENDA",
+                "candle_time": t.region_bar_time.strftime("%d/%m/%Y %H:%M"),
+                "entry": t.entry_price,
+                "sl": t.stop_loss,
+                "tp": t.take_profit,
+            }
+    except Exception:
+        pass
+    
+    return {
+        "status": "Aguardando Sinal...",
+        "direction": "—",
+        "candle_time": "—",
+        "entry": 0.0,
+        "sl": 0.0,
+        "tp": 0.0,
+    }
+
+async def _render_status_json(request: Request) -> str:
+    """Gera o payload JSON para o SSE."""
     settings: EngineSettings = request.app.state.settings
     gateway = get_gateway(request)
 
-    # Caso 1: MT5 indisponível
     if gateway is None:
-        ctx = {
-            "engine_status": "no_mt5",
-            "error": "MT5 indisponível. Rode com FakeGateway ou abra o MT5.",
-        }
-        # Jinja renderiza o partial sem precisar do request
-        return _sse_frame(templates.get_template("_status_sse.html").render(ctx))
+        return _sse_frame(json.dumps({"status": "no_mt5"}))
 
-    # Caso 2: MT5 disponível
     try:
         preset = load_preset(settings.preset)
-        status = get_status(gateway, settings.mt5.symbol, preset)
-    except Exception as exc:  # noqa: BLE001
-        log.error("stream_status_falhou", erro=str(exc))
-        ctx = {"engine_status": "error", "error": str(exc)}
-        return _sse_frame(templates.get_template("_status_sse.html").render(ctx))
+        account = gateway.account()
+        tick = gateway.symbol_info_tick(settings.mt5.symbol)
+        
+        # Puxa os últimos 181 candles para calcular o Z-score
+        bars = gateway.closed_bars(settings.mt5.symbol, preset.detector.timeframe, preset.detector.length + 1)
+        
+        # Calcula o detector
+        detector_info = None
+        if bars and len(bars) >= preset.detector.length:
+            det = VolumeStdDetector(
+                length=preset.detector.length,
+                std_ref=preset.detector.std_ref,
+                source=preset.detector.volume_source,
+            )
+            for b in bars:
+                reading = det.on_bar_closed(b)
+            
+            if reading:
+                detector_info = {
+                    "zscore": reading.zscore,
+                    "mean": reading.mean,
+                    "std": reading.std,
+                    "volume": reading.volume,
+                }
 
-    detector = None
-    if status.reading is not None:
-        detector = {
-            "zscore": status.reading.zscore,
-            "mean": status.reading.mean,
-            "std": status.reading.std,
-            "volume": status.reading.volume,
-            "is_signal": status.reading.is_signal,
+        active = _get_active_trade_info(request)
+
+        payload = {
+            "status": "ready",
+            "account": {
+                "login": account.login,
+                "server": account.server,
+                "balance": account.balance,
+                "currency": account.currency,
+            },
+            "symbol": settings.mt5.symbol,
+            "last_close": tick.bid if tick else 0.0,
+            "candles_loaded": len(bars),
+            "detector": detector_info,
+            "active_trade": active,
         }
-
-    ctx = {
-        "engine_status": "ready",
-        "account": {
-            "login": status.account.login,
-            "server": status.account.server,
-            "balance": status.account.balance,
-            "currency": status.account.currency,
-        },
-        "symbol": status.symbol,
-        "bars_loaded": status.bars_loaded,
-        "last_bar_time": status.last_bar_time,
-        "last_close": status.last_close,
-        "detector": detector,
-    }
-    return _sse_frame(templates.get_template("_status_sse.html").render(ctx))
+        
+        return _sse_frame(json.dumps(payload))
+    except Exception as exc:
+        log.error("stream_error", erro=str(exc))
+        return _sse_frame(json.dumps({"status": "error", "msg": str(exc)}))
 
 
-def _sse_frame(html: str) -> str:
-    """Formata HTML como um frame SSE.
-
-    O protocolo SSE exige que cada linha comece com `data: `.
-    Como o HTML tem várias linhas, quebramos cada uma em um `data: `.
-    """
-    lines = html.splitlines()
-    data = "\n".join(f"data: {line}" for line in lines)
-    return f"{data}\n\n"
+def _sse_frame(json_str: str) -> str:
+    return f"data: {json_str}\n\n"
 
 
 @router.get("/stream")
 async def stream_status(request: Request):
-    """SSE: emite o status do motor a cada 2s."""
     async def event_generator():
         try:
             while True:
                 if await request.is_disconnected():
-                    log.info("stream_cliente_desconectou")
                     break
-                try:
-                    yield await _render_status(request)
-                except Exception as exc:  # noqa: BLE001
-                    log.error("stream_emit_falhou", erro=str(exc))
-                    yield _sse_frame(f"<article class='card'><p>Erro: {exc}</p></article>")
+                yield await _render_status_json(request)
                 await asyncio.sleep(_POLL_INTERVAL)
         except asyncio.CancelledError:
-            log.info("stream_cancelado")
             raise
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
