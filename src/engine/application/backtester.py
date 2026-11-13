@@ -76,7 +76,7 @@ class Backtester:
 
         feed = self._build_feed(bars)
 
-        session = TradingSession(self._preset)
+        session = TradingSession(self._preset, is_backtest=True)  # F16
         
         simulation = run_simulation(
             feed, self._preset, session=session,

@@ -113,10 +113,12 @@ class TradingSession:
         pricing_config: PricingConfig | None = None,
         state_store: StateStore | None = None,
         calendar: "B3Calendar | None" = None,
+        is_backtest: bool = False,  # F16: desativa trava anti-spam no backtest
     ) -> None:
         self._preset = preset
         self._symbol = symbol  # F11: guarda o símbolo
         self._pricing = pricing_config or _preset_to_pricing(preset)
+        self._is_backtest = is_backtest  # F16
 
         # F5e: calendar B3 (default = B3Calendar() em produção)
         if calendar is None:
@@ -793,7 +795,7 @@ class TradingSession:
     ) -> TradeIntent | None:
         # --- TRAVA ANTI-SPAM ---
         # Se já temos um trade aberto ou uma ordem pendente, não manda outra entrada.
-        if self._current_entry_region is not None:
+        if self._current_entry_region is not None and not self._is_backtest:
             return None
         
         loc = region.location
